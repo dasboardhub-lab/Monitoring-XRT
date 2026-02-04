@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ops Report - XRT Monitoring</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Modal Transitions */
+        .modal { opacity: 0; visibility: hidden; transition: all 0.2s ease-in-out; }
+        .modal.active { opacity: 1; visibility: visible; }
+        .modal-content { transform: scale(0.95); transition: all 0.2s ease-in-out; }
+        .modal.active .modal-content { transform: scale(1); }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 pb-20">
+
+    <!-- HEADER -->
+    <div class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+        <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex flex-col md:flex-row items-center justify-between h-auto md:h-16 py-2 md:py-0 gap-2">
+                <!-- Branding -->
+                <div class="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-sm">
+                            <i data-lucide="building-2" class="w-5 h-5 text-white"></i>
+                        </div>
+                        <div>
+                            <h1 class="text-lg font-bold text-slate-800 leading-none">Ops Report</h1>
+                            <p class="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mt-0.5">
+                                XRT Monitoring <span id="connection-status" class="text-amber-500">• Connecting...</span>
+                            </p>
+                        </div>
+                    </div>
+                    <div class="hidden md:block h-8 w-px bg-slate-200 mx-2"></div>
+                    <div class="text-right md:text-left">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Today</p>
+                        <p class="text-sm font-semibold text-slate-700" id="current-date">Loading...</p>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto bg-slate-50 md:bg-white p-2 md:p-0 rounded-lg">
+                    <input type="file" id="fileInput" accept=".csv,.txt" class="hidden">
+                    
+                    <button id="btn-upload" class="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 shadow-sm w-full md:w-auto justify-center">
+                        <i data-lucide="upload" class="w-4 h-4 text-indigo-500"></i> Upload CSV
+                    </button>
+
+                    <button id="btn-save" class="hidden flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-medium hover:bg-emerald-100 shadow-sm w-full md:w-auto justify-center">
+                        <i data-lucide="save" class="w-4 h-4"></i> Simpan
+                    </button>
+
+                    <!-- History Dropdown -->
+                    <div class="relative w-full md:w-auto">
+                        <button id="btn-history" class="flex items-center justify-between md:justify-start gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 w-full">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="history" class="w-4 h-4 text-slate-500"></i>
+                                <span>History</span>
+                            </div>
+                            <i data-lucide="chevron-down" class="w-3 h-3 text-slate-400"></i>
+                        </button>
+                        <div id="history-dropdown" class="hidden absolute top-full right-0 mt-1 w-full md:w-48 bg-white rounded-lg shadow-xl border border-slate-100 z-50 overflow-hidden max-h-60 overflow-y-auto">
+                            <!-- Filled by JS -->
+                        </div>
+                    </div>
+
+                    <div class="w-px h-6 bg-slate-200 mx-1 hidden sm:block"></div>
+
+                    <!-- Filters -->
+                    <select id="filter-hub" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg block w-full md:w-32 pl-2 pr-6 py-1.5 font-medium cursor-pointer">
+                        <option value="ALL">ALL HUBS</option>
+                    </select>
+
+                    <button id="btn-ai" class="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-all text-sm font-medium w-full md:w-auto justify-center">
+                        <i data-lucide="bot" class="w-4 h-4"></i> AI Analyst
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        
+        <!-- Empty State -->
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 animate-fade-in">
+            <div class="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 max-w-lg w-full text-center">
+                <div class="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <i data-lucide="activity" class="w-10 h-10 text-indigo-600"></i>
+                </div>
+                <h2 class="text-2xl font-bold text-slate-800 mb-2">Selamat Datang di Ops Report</h2>
+                <p class="text-slate-500 mb-8 leading-relaxed">Belum ada data. Silakan unggah CSV atau pilih history.</p>
+                <div class="grid grid-cols-2 gap-4">
+                    <button onclick="document.getElementById('fileInput').click()" class="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group">
+                        <i data-lucide="upload" class="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"></i>
+                        <span class="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Upload CSV</span>
+                    </button>
+                    <button onclick="toggleHistory()" class="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group">
+                        <i data-lucide="history" class="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"></i>
+                        <span class="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Buka History</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dashboard Content (Hidden by default) -->
+        <div id="dashboard-content" class="hidden space-y-6 animate-fade-in">
+            
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <!-- KPI 1 -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="p-2 rounded-lg border text-blue-600 bg-blue-50 border-blue-100"><i data-lucide="package" class="w-4 h-4"></i></div>
+                    </div>
+                    <div>
+                        <div id="kpi-total" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
+                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Total Volume</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Paket dalam scope</p>
+                    </div>
+                </div>
+                <!-- KPI 2 -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="p-2 rounded-lg border text-emerald-600 bg-emerald-50 border-emerald-100"><i data-lucide="check-circle-2" class="w-4 h-4"></i></div>
+                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-slate-50 text-slate-500">On Track</span>
+                    </div>
+                    <div>
+                        <div id="kpi-clear" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
+                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Clear Status</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Rute Sesuai</p>
+                    </div>
+                </div>
+                <!-- KPI 3 -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="p-2 rounded-lg border text-rose-600 bg-rose-50 border-rose-100"><i data-lucide="alert-triangle" class="w-4 h-4"></i></div>
+                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-red-50 text-red-600">Attention</span>
+                    </div>
+                    <div>
+                        <div id="kpi-xrt" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
+                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Missroute (XRT)</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Kesalahan Jalur</p>
+                    </div>
+                </div>
+                <!-- KPI 4 -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="p-2 rounded-lg border text-amber-600 bg-amber-50 border-amber-100"><i data-lucide="trending-up" class="w-4 h-4"></i></div>
+                    </div>
+                    <div>
+                        <div id="kpi-rate" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0%</div>
+                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Error Rate</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Persentase XRT</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                <!-- Health Chart -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="activity" class="w-4 h-4 text-slate-500"></i></div>
+                        <h3 class="font-bold text-slate-800 text-sm">Operational Health</h3>
+                    </div>
+                    <div class="p-6 h-64 flex flex-col justify-center">
+                        <div class="mb-6 text-center">
+                            <div id="health-rate-text" class="text-5xl font-extrabold text-emerald-600 tracking-tight">0%</div>
+                            <p class="text-slate-400 font-medium mt-1 uppercase text-xs tracking-widest">Clear Status Rate</p>
+                        </div>
+                        <div class="w-full h-4 bg-slate-100 rounded-full overflow-hidden flex shadow-inner">
+                            <div id="health-bar-clear" class="h-full bg-emerald-500 transition-all duration-500" style="width: 0%"></div>
+                            <div id="health-bar-xrt" class="h-full bg-rose-500 transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                        <div class="flex justify-between mt-3 text-xs font-bold uppercase tracking-wide">
+                            <span class="text-emerald-600">Clear: <span id="health-text-clear">0</span></span>
+                            <span class="text-rose-600">XRT: <span id="health-text-xrt">0</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SLA Chart -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="clock" class="w-4 h-4 text-slate-500"></i></div>
+                        <h3 class="font-bold text-slate-800 text-sm">SLA Risk (XRT)</h3>
+                    </div>
+                    <div class="p-4 h-64 relative">
+                        <canvas id="slaChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Audit Chart -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="search" class="w-4 h-4 text-slate-500"></i></div>
+                        <h3 class="font-bold text-slate-800 text-sm">Root Cause (Audit)</h3>
+                    </div>
+                    <div class="p-4 h-64 relative flex items-center justify-center">
+                        <canvas id="auditChart"></canvas>
+                        <!-- Center Text for Doughnut -->
+                        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                            <span id="audit-total-center" class="text-2xl font-bold text-slate-700">0</span>
+                            <span class="text-[10px] text-slate-400 uppercase tracking-wider">Checked</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Top Locations -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-[400px]">
+                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="map-pin" class="w-4 h-4 text-slate-500"></i></div>
+                        <h3 class="font-bold text-slate-800 text-sm">Top Lokasi Nyasar</h3>
+                    </div>
+                    <div class="flex-1 overflow-y-auto scrollbar-thin">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-slate-50 text-slate-500 font-semibold sticky top-0 z-10 shadow-sm">
+                                <tr><th class="px-5 py-3 text-xs uppercase">Staging</th><th class="px-5 py-3 text-right text-xs uppercase">Jml</th></tr>
+                            </thead>
+                            <tbody id="top-loc-tbody" class="divide-y divide-slate-100">
+                                <!-- JS Generated -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Matrix Table -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
+                    <div class="flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="grid" class="w-4 h-4 text-slate-500"></i></div>
+                        <div>
+                            <h3 class="font-bold text-slate-800 text-sm leading-tight">Matriks Perpindahan</h3>
+                            <div class="text-xs text-slate-400 mt-0.5">Seharusnya (Baris) vs Aktual (Kolom)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="overflow-x-auto max-h-[500px]" id="matrix-container">
+                    <!-- JS Generated Matrix -->
+                </div>
+            </div>
+
+            <!-- Detail Table -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="px-5 py-4 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div class="flex gap-3 items-center">
+                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="file-text" class="w-4 h-4 text-slate-500"></i></div>
+                        <div>
+                            <h3 class="font-bold text-slate-800 text-sm leading-tight">Detail Paket & Audit</h3>
+                            <div class="flex gap-4 mt-1 text-xs">
+                                <span class="flex items-center gap-1 text-slate-600 font-medium">
+                                    <i data-lucide="user" class="w-3 h-3 text-orange-500"></i> Human: <b id="stat-human">0</b>
+                                </span>
+                                <span class="flex items-center gap-1 text-slate-600 font-medium">
+                                    <i data-lucide="monitor-cog" class="w-3 h-3 text-blue-500"></i> System: <b id="stat-system">0</b>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="copyAllAwbs()" class="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md transition-colors border border-slate-200 text-xs font-bold flex items-center gap-1">
+                            <i data-lucide="clipboard-copy" class="w-3.5 h-3.5"></i> Copy Resi
+                        </button>
+                        <button onclick="exportCSV()" class="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md transition-colors border border-indigo-200 text-xs font-bold flex items-center gap-1">
+                            <i data-lucide="download" class="w-3.5 h-3.5"></i> Export
+                        </button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs whitespace-nowrap">
+                        <thead class="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider">
+                            <tr>
+                                <th class="p-3 border-b border-slate-200 text-center w-24">Audit</th>
+                                <th class="p-3 border-b border-slate-200">AWB No</th>
+                                <th class="p-3 border-b border-slate-200 max-w-xs">Alamat</th>
+                                <th class="p-3 border-b border-slate-200">Hub</th>
+                                <th class="p-3 border-b border-slate-200 bg-rose-50/50 text-rose-700">Aktual</th>
+                                <th class="p-3 border-b border-slate-200 text-center">Route</th>
+                                <th class="p-3 border-b border-slate-200 bg-emerald-50/50 text-emerald-700">Seharusnya</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detail-table-body" class="divide-y divide-slate-100">
+                            <!-- JS Generated Rows -->
+                        </tbody>
+                    </table>
+                </div>
+                <!-- Pagination Simple -->
+                <div class="p-3 border-t border-slate-100 flex justify-end gap-2">
+                    <button id="prev-page" class="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><i data-lucide="chevron-left" class="w-4 h-4 text-slate-600"></i></button>
+                    <span id="page-indicator" class="text-[10px] font-bold text-slate-600 px-2 flex items-center">1 / 1</span>
+                    <button id="next-page" class="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><i data-lucide="chevron-right" class="w-4 h-4 text-slate-600"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SAVE MODAL -->
+    <div id="save-modal" class="modal fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+        <div class="modal-content bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 border border-slate-200">
+            <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <i data-lucide="save" class="w-5 h-5 text-emerald-600"></i> Simpan Laporan
+            </h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Pilih Tanggal</label>
+                    <input type="date" id="save-date-input" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                </div>
+                <p class="text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                    Data XRT dan hasil audit manual akan disimpan ke cloud.
+                </p>
+                <div class="flex justify-end gap-3 pt-2">
+                    <button onclick="toggleModal('save-modal', false)" class="px-4 py-2 text-slate-600 text-sm font-medium">Batal</button>
+                    <button onclick="saveReportToFirebase()" id="btn-confirm-save" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium">Simpan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI MODAL -->
+    <div id="ai-modal" class="modal fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+        <div class="modal-content bg-white rounded-2xl shadow-2xl max-w-3xl w-full flex flex-col max-h-[90vh] overflow-hidden border border-slate-200">
+            <div class="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                <div class="flex items-center gap-4">
+                    <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
+                        <i data-lucide="bot" class="w-6 h-6 text-white"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-slate-800 text-lg">AI Executive Analysis</h3>
+                        <p class="text-xs text-slate-500 font-medium">Powered by Gemini 1.5 Flash</p>
+                    </div>
+                </div>
+                <button onclick="toggleModal('ai-modal', false)" class="p-2 hover:bg-slate-200 rounded-full"><i data-lucide="x" class="w-5 h-5 text-slate-400"></i></button>
+            </div>
+            <div id="ai-content" class="p-8 overflow-y-auto space-y-6 bg-white min-h-[300px]">
+                <!-- Filled by JS -->
+                <div class="flex flex-col items-center justify-center h-48 gap-4">
+                    <i data-lucide="loader-2" class="w-8 h-8 text-indigo-600 animate-spin"></i>
+                    <p class="text-slate-500 font-medium text-sm animate-pulse">Sedang menganalisa data...</p>
+                </div>
+            </div>
+            <div class="p-5 border-t border-slate-100 bg-slate-50 flex justify-end">
+                <button onclick="toggleModal('ai-modal', false)" class="px-5 py-2 text-slate-600 border border-slate-200 rounded-lg text-sm font-medium hover:bg-white">Tutup</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module">
+        // --- 1. CONFIG & IMPORTS ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, getDocs, writeBatch, serverTimestamp, query, orderBy, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBBlbxiBpBR522JTI5xyxakGK9AEChXv1o",
+            authDomain: "dailyreport-cfc8f.firebaseapp.com",
+            projectId: "dailyreport-cfc8f",
+            storageBucket: "dailyreport-cfc8f.firebasestorage.app",
+            messagingSenderId: "963104518926",
+            appId: "1:963104518926:web:b822f34fe43ce3838c5d5f"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const API_KEY = "AIzaSyB9dowMAmZsQt64bdOvklZPd7lNDFzpTtE"; // Gemini API
+
+        // --- 2. GLOBAL STATE ---
+        let appState = {
+            data: [],
+            manualReasons: {}, // {awb: 'Human'|'System'}
+            user: null,
+            filterHub: "ALL",
+            currentPage: 1,
+            itemsPerPage: 20,
+            saveDate: new Date().toISOString().slice(0, 10),
+            charts: { sla: null, audit: null }
+        };
+
+        // --- 3. INIT & EVENT LISTENERS ---
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            
+            // Set Date
+            const options = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
+            document.getElementById('current-date').innerText = new Date().toLocaleDateString('id-ID', options);
+            document.getElementById('save-date-input').value = appState.saveDate;
+
+            // Auth Listener
+            onAuthStateChanged(auth, (user) => {
+                const statusEl = document.getElementById('connection-status');
+                if (user) {
+                    appState.user = user;
+                    statusEl.innerHTML = '<span class="text-emerald-500">• Online</span>';
+                    fetchHistoryList();
+                } else {
+                    signInAnonymously(auth).catch(e => console.error("Auth Err", e));
+                    statusEl.innerHTML = '<span class="text-amber-500">• Offline</span>';
+                }
+            });
+
+            // Listeners
+            document.getElementById('btn-upload').addEventListener('click', () => document.getElementById('fileInput').click());
+            document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+            
+            document.getElementById('btn-save').addEventListener('click', () => toggleModal('save-modal', true));
+            document.getElementById('btn-confirm-save').addEventListener('click', saveReportToFirebase);
+            
+            document.getElementById('btn-history').addEventListener('click', toggleHistory);
+            
+            document.getElementById('filter-hub').addEventListener('change', (e) => {
+                appState.filterHub = e.target.value;
+                appState.currentPage = 1;
+                renderDashboard();
+            });
+
+            document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
+            document.getElementById('next-page').addEventListener('click', () => changePage(1));
+            document.getElementById('btn-ai').addEventListener('click', runAiAnalysis);
+
+            // Expose global functions for onclick in HTML
+            window.toggleModal = toggleModal;
+            window.toggleHistory = toggleHistory;
+            window.setManualReason = setManualReason;
+            window.loadHistory = loadHistory;
+            window.deleteReport = deleteReport;
+            window.copyAllAwbs = copyAllAwbs;
+            window.exportCSV = exportCSV;
+        });
+
+        // --- 4. LOGIC FUNCTIONS ---
+
+        function handleFileUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const text = event.target.result;
+                const rows = parseCSV(text);
+                processData(rows);
+            };
+            reader.readAsText(file);
+        }
+
+        function parseCSV(text) {
+            const lines = text.split('\n').filter(line => line.trim() !== '');
+            if (lines.length === 0) return [];
+            const headers = lines[0].split('|').map(h => h.trim().replace(/^"|"$/g, ''));
+            
+            return lines.slice(1).map(line => {
+                const vals = line.split('|');
+                let obj = {};
+                headers.forEach((h, i) => {
+                    obj[h] = vals[i] ? vals[i].trim().replace(/^"|"$/g, '') : '';
+                });
+                return obj;
+            });
+        }
+
+        function processData(rawData) {
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            const processed = rawData
+                .filter(row => row.awb_no && row.awb_no.trim() !== "")
+                .map(row => {
+                    const actual = row.staging_operator_internal || "N/A";
+                    const expected = row.destination_staging || "N/A";
+                    const isXrt = actual !== expected;
+                    
+                    let slaStatus = "N/A";
+                    if (isXrt && row.expect_delivery_tm) {
+                        const edd = new Date(row.expect_delivery_tm);
+                        edd.setHours(0,0,0,0);
+                        if (!isNaN(edd)) {
+                            if (today < edd) slaStatus = "Before EDD";
+                            else if (today.getTime() === edd.getTime()) slaStatus = "Last Day";
+                            else slaStatus = "After EDD";
+                        }
+                    } else if (isXrt) slaStatus = "No EDD Data";
+
+                    return {
+                        ...row,
+                        actualStaging: actual,
+                        expectedStaging: expected,
+                        status: isXrt ? 'XRT' : 'CLEAR',
+                        hub: row.hub_operator_internal || "Unknown Hub",
+                        slaStatus,
+                        receiverAddress: row.receiver_address || "-",
+                        receiverDistrict: row.receiver_district_name || "-"
+                    };
+                })
+                .filter(r => !r.expectedStaging.includes("X9"));
+
+            appState.data = processed;
+            appState.manualReasons = {}; // reset audit
+            
+            // Populate Hub Filter
+            const hubs = ["ALL", ...new Set(processed.map(p => p.hub))].sort();
+            const filterEl = document.getElementById('filter-hub');
+            filterEl.innerHTML = hubs.map(h => `<option value="${h}">${h}</option>`).join('');
+            
+            renderDashboard();
+        }
+
+        function getStats() {
+            const filtered = appState.data.filter(d => 
+                appState.filterHub === "ALL" || d.hub === appState.filterHub
+            );
+
+            const total = filtered.length;
+            const xrtList = filtered.filter(d => d.status === 'XRT');
+            const clearCount = filtered.length - xrtList.length;
+            const xrtCount = xrtList.length;
+            
+            // SLA
+            const slaCount = { "Before EDD": 0, "Last Day": 0, "After EDD": 0 };
+            xrtList.forEach(d => { if(slaCount[d.slaStatus] !== undefined) slaCount[d.slaStatus]++; });
+
+            // Audit
+            let human = 0, system = 0;
+            xrtList.forEach(d => {
+                const r = appState.manualReasons[d.awb_no];
+                if (r === 'Human') human++;
+                if (r === 'System') system++;
+            });
+
+            // Top Locs
+            const locMap = {};
+            xrtList.forEach(d => locMap[d.actualStaging] = (locMap[d.actualStaging] || 0) + 1);
+            const topLocs = Object.entries(locMap).map(([name, count]) => ({name, count})).sort((a,b) => b.count - a.count);
+
+            return { total, xrtCount, clearCount, xrtList, slaCount, human, system, topLocs };
+        }
+
+        // --- 5. RENDER FUNCTIONS ---
+
+        function renderDashboard() {
+            const stats = getStats();
+
+            if (appState.data.length === 0) {
+                document.getElementById('empty-state').classList.remove('hidden');
+                document.getElementById('dashboard-content').classList.add('hidden');
+                document.getElementById('btn-save').classList.add('hidden');
+                return;
+            }
+
+            document.getElementById('empty-state').classList.add('hidden');
+            document.getElementById('dashboard-content').classList.remove('hidden');
+            document.getElementById('btn-save').classList.remove('hidden');
+
+            // Update KPIs
+            document.getElementById('kpi-total').innerText = stats.total.toLocaleString();
+            document.getElementById('kpi-clear').innerText = stats.clearCount.toLocaleString();
+            document.getElementById('kpi-xrt').innerText = stats.xrtCount.toLocaleString();
+            const rate = stats.total ? ((stats.xrtCount / stats.total) * 100).toFixed(2) : 0;
+            document.getElementById('kpi-rate').innerText = rate + "%";
+
+            // Update Health Bar
+            const clearRate = (100 - rate).toFixed(2);
+            document.getElementById('health-rate-text').innerText = clearRate + "%";
+            document.getElementById('health-bar-clear').style.width = clearRate + "%";
+            document.getElementById('health-bar-xrt').style.width = rate + "%";
+            document.getElementById('health-text-clear').innerText = stats.clearCount.toLocaleString();
+            document.getElementById('health-text-xrt').innerText = stats.xrtCount.toLocaleString();
+
+            // Update Audit Stats
+            document.getElementById('stat-human').innerText = stats.human;
+            document.getElementById('stat-system').innerText = stats.system;
+            document.getElementById('audit-total-center').innerText = (stats.human + stats.system);
+
+            // Render Charts
+            renderCharts(stats);
+
+            // Render Top Locations
+            const locHtml = stats.topLocs.map(l => `
+                <tr class="hover:bg-slate-50">
+                    <td class="px-5 py-2.5 font-medium text-slate-700 text-xs truncate max-w-[200px]">${l.name}</td>
+                    <td class="px-5 py-2.5 text-right font-bold text-rose-600 text-xs">${l.count}</td>
+                </tr>
+            `).join('');
+            document.getElementById('top-loc-tbody').innerHTML = locHtml;
+
+            // Render Matrix & Table
+            renderMatrix(stats.xrtList);
+            renderTable(stats.xrtList);
+
+            lucide.createIcons();
+        }
+
+        function renderCharts(stats) {
+            // SLA Chart
+            const slaCtx = document.getElementById('slaChart').getContext('2d');
+            if (appState.charts.sla) appState.charts.sla.destroy();
+            
+            appState.charts.sla = new Chart(slaCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Before EDD', 'Last Day', 'After EDD'],
+                    datasets: [{
+                        label: 'Paket',
+                        data: [stats.slaCount["Before EDD"], stats.slaCount["Last Day"], stats.slaCount["After EDD"]],
+                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true, grid: { display: true, color: '#f1f5f9' } }, x: { grid: { display: false } } }
+                }
+            });
+
+            // Audit Chart
+            const auditCtx = document.getElementById('auditChart').getContext('2d');
+            if (appState.charts.audit) appState.charts.audit.destroy();
+
+            const unchecked = stats.xrtCount - (stats.human + stats.system);
+            appState.charts.audit = new Chart(auditCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Human', 'System', 'Unchecked'],
+                    datasets: [{
+                        data: [stats.human, stats.system, unchecked],
+                        backgroundColor: ['#f97316', '#3b82f6', '#cbd5e1'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    cutout: '75%',
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function renderMatrix(xrtList) {
+            const rows = new Set();
+            const cols = new Set();
+            const map = {};
+
+            xrtList.forEach(d => {
+                rows.add(d.expectedStaging);
+                cols.add(d.actualStaging);
+                if (!map[d.expectedStaging]) map[d.expectedStaging] = {};
+                if (!map[d.expectedStaging][d.actualStaging]) map[d.expectedStaging][d.actualStaging] = 0;
+                map[d.expectedStaging][d.actualStaging]++;
+            });
+
+            const sortedRows = Array.from(rows).sort();
+            const sortedCols = Array.from(cols).sort();
+
+            if (sortedRows.length === 0) {
+                document.getElementById('matrix-container').innerHTML = '<div class="p-4 text-center text-slate-400">No Data</div>';
+                return;
+            }
+
+            let html = '<table class="w-full text-xs border-collapse"><thead class="bg-slate-50 sticky top-0 z-20 shadow-sm">';
+            html += `<tr><th class="p-3 border border-slate-200 bg-slate-100 sticky left-0 z-30 min-w-[150px] text-left">Seharusnya ↓</th>`;
+            sortedCols.forEach(c => html += `<th class="p-2 border border-slate-200 min-w-[80px] bg-white text-center">${c}</th>`);
+            html += '<th class="p-2 border border-slate-200 bg-slate-800 text-white sticky right-0 z-30">Total</th></tr></thead><tbody>';
+
+            sortedRows.forEach(r => {
+                let rowTotal = 0;
+                html += `<tr><td class="p-2 border border-slate-200 font-semibold text-slate-700 bg-slate-50 sticky left-0 z-10">${r}</td>`;
+                sortedCols.forEach(c => {
+                    const val = map[r] && map[r][c] ? map[r][c] : 0;
+                    rowTotal += val;
+                    const cell = val > 0 ? `<span class="font-bold text-slate-800">${val}</span>` : '<span class="text-slate-200">-</span>';
+                    html += `<td class="p-2 border border-slate-200 text-center">${cell}</td>`;
+                });
+                html += `<td class="p-2 border border-slate-200 bg-slate-800 text-white font-bold text-center sticky right-0 z-10">${rowTotal}</td></tr>`;
+            });
+
+            html += '</tbody></table>';
+            document.getElementById('matrix-container').innerHTML = html;
+        }
+
+        function renderTable(xrtList) {
+            const start = (appState.currentPage - 1) * appState.itemsPerPage;
+            const end = start + appState.itemsPerPage;
+            const pageData = xrtList.slice(start, end);
+
+            const tbody = document.getElementById('detail-table-body');
+            
+            if (pageData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-400">No Data</td></tr>';
+            } else {
+                tbody.innerHTML = pageData.map(d => {
+                    const reason = appState.manualReasons[d.awb_no];
+                    const hActive = reason === 'Human' ? 'bg-orange-100 border-orange-300 text-orange-600' : 'bg-white border-slate-200 text-slate-300';
+                    const sActive = reason === 'System' ? 'bg-blue-100 border-blue-300 text-blue-600' : 'bg-white border-slate-200 text-slate-300';
+                    
+                    return `
+                    <tr class="hover:bg-indigo-50/30">
+                        <td class="p-2 bg-slate-50/30 text-center">
+                            <div class="flex justify-center gap-1">
+                                <button onclick="setManualReason('${d.awb_no}', 'Human')" class="w-6 h-6 rounded flex items-center justify-center border ${hActive}"><i data-lucide="user" class="w-3 h-3"></i></button>
+                                <button onclick="setManualReason('${d.awb_no}', 'System')" class="w-6 h-6 rounded flex items-center justify-center border ${sActive}"><i data-lucide="monitor-cog" class="w-3 h-3"></i></button>
+                            </div>
+                        </td>
+                        <td class="p-3 font-mono font-medium text-indigo-600">${d.awb_no}</td>
+                        <td class="p-3 text-slate-500 max-w-xs truncate" title="${d.receiverAddress}">
+                            <div class="font-bold text-slate-700">${d.receiverDistrict}</div>
+                            <div class="text-[10px]">${d.receiverAddress}</div>
+                        </td>
+                        <td class="p-3 text-slate-700">${d.hub}</td>
+                        <td class="p-3 bg-rose-50/20 text-rose-700 font-medium">${d.actualStaging}</td>
+                        <td class="p-3 text-center text-slate-300"><i data-lucide="arrow-right" class="w-3 h-3 mx-auto"></i></td>
+                        <td class="p-3 bg-emerald-50/20 text-emerald-700 font-medium">${d.expectedStaging}</td>
+                    </tr>
+                `}).join('');
+            }
+            
+            const totalPages = Math.ceil(xrtList.length / appState.itemsPerPage) || 1;
+            document.getElementById('page-indicator').innerText = `${appState.currentPage} / ${totalPages}`;
+            lucide.createIcons();
+        }
+
+        // --- 6. ACTIONS ---
+
+        function changePage(delta) {
+            const stats = getStats();
+            const totalPages = Math.ceil(stats.xrtList.length / appState.itemsPerPage) || 1;
+            const newPage = appState.currentPage + delta;
+            if (newPage >= 1 && newPage <= totalPages) {
+                appState.currentPage = newPage;
+                renderTable(stats.xrtList);
+            }
+        }
+
+        window.setManualReason = function(awb, reason) {
+            appState.manualReasons[awb] = reason;
+            renderDashboard(); // Re-render stats and table
+        }
+
+        // --- FIREBASE ACTIONS ---
+
+        window.saveReportToFirebase = async function() {
+            if (!appState.data.length) return;
+            const date = document.getElementById('save-date-input').value;
+            const btn = document.getElementById('btn-confirm-save');
+            btn.innerText = "Menyimpan...";
+            
+            try {
+                // 1. Save Summary
+                const stats = getStats();
+                await setDoc(doc(db, "daily_reports", date), {
+                    date,
+                    total: stats.total,
+                    xrtCount: stats.xrtCount,
+                    xrtRate: (stats.xrtCount/stats.total*100).toFixed(2),
+                    savedAt: serverTimestamp()
+                }, {merge: true});
+
+                // 2. Save Records (Batch) - Simplified logic for this demo
+                // Only saving manual audit changes to a 'records' subcollection
+                const batch = writeBatch(db);
+                let count = 0;
+                stats.xrtList.forEach(item => {
+                    const ref = doc(db, "daily_reports", date, "records", item.awb_no);
+                    batch.set(ref, {
+                        ...item,
+                        manualAudit: appState.manualReasons[item.awb_no] || null
+                    });
+                    count++;
+                });
+
+                if (count > 0) await batch.commit();
+
+                alert("Berhasil disimpan!");
+                toggleModal('save-modal', false);
+                fetchHistoryList();
+            } catch (e) {
+                alert("Gagal: " + e.message);
+            } finally {
+                btn.innerText = "Simpan";
+            }
+        }
+
+        async function fetchHistoryList() {
+            const q = query(collection(db, "daily_reports"), orderBy("date", "desc"));
+            const snapshot = await getDocs(q);
+            const container = document.getElementById('history-dropdown');
+            
+            if (snapshot.empty) {
+                container.innerHTML = '<div class="p-3 text-xs text-slate-400">No history</div>';
+                return;
+            }
+
+            container.innerHTML = snapshot.docs.map(d => `
+                <div class="flex items-center justify-between px-3 py-2 border-b border-slate-50 hover:bg-indigo-50">
+                    <div onclick="loadHistory('${d.id}')" class="cursor-pointer flex-grow text-sm text-slate-700 font-medium">
+                        ${d.id}
+                    </div>
+                    <button onclick="deleteReport('${d.id}')" class="p-1 text-slate-300 hover:text-red-500"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+                </div>
+            `).join('');
+            lucide.createIcons();
+        }
+
+        window.loadHistory = async function(dateStr) {
+            const snapshot = await getDocs(collection(db, "daily_reports", dateStr, "records"));
+            const loaded = [];
+            const reasons = {};
+            
+            snapshot.forEach(doc => {
+                const d = doc.data();
+                loaded.push(d);
+                if (d.manualAudit) reasons[d.awb_no] = d.manualAudit;
+            });
+
+            appState.data = loaded;
+            appState.manualReasons = reasons;
+            appState.saveDate = dateStr;
+            toggleHistory(); // Close dropdown
+            renderDashboard();
+        }
+
+        window.deleteReport = async function(dateStr) {
+            if(!confirm(`Hapus laporan ${dateStr}?`)) return;
+            try {
+                // Simplified delete (only main doc for demo, ideally delete subcollection too)
+                await deleteDoc(doc(db, "daily_reports", dateStr));
+                alert("Terhapus.");
+                fetchHistoryList();
+            } catch (e) { alert("Err: " + e.message); }
+        }
+
+        // --- AI ---
+        window.runAiAnalysis = async function() {
+            toggleModal('ai-modal', true);
+            const stats = getStats();
+            const prompt = `Analisa data logistik: Total ${stats.total}, XRT ${stats.xrtCount}, Audit Human Error ${stats.human}, System Error ${stats.system}. Top Lokasi Nyasar: ${stats.topLocs.slice(0,3).map(l=>l.name).join(', ')}. Berikan Executive Summary singkat, Root Cause, dan Rekomendasi dalam HTML format (gunakan tag <p>, <ul>, <li>, <b>). Bahasa Indonesia.`;
+
+            try {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
+                    method: "POST", 
+                    headers: { "Content-Type": "application/json" }, 
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                });
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "Gagal analisa.";
+                
+                // Simple cleanup of markdown code blocks if AI returns them
+                const cleanText = text.replace(/```html/g, '').replace(/```/g, '');
+                
+                document.getElementById('ai-content').innerHTML = `
+                    <div class="prose prose-sm max-w-none text-slate-700">
+                        ${cleanText}
+                    </div>
+                `;
+            } catch (e) {
+                document.getElementById('ai-content').innerHTML = `<p class="text-red-500">Error: ${e.message}</p>`;
+            }
+        }
+
+        // --- UTILS ---
+        function toggleModal(id, show) {
+            const el = document.getElementById(id);
+            if (show) el.classList.add('active');
+            else el.classList.remove('active');
+        }
+
+        function toggleHistory() {
+            const el = document.getElementById('history-dropdown');
+            el.classList.toggle('hidden');
+        }
+
+        window.copyAllAwbs = function() {
+            const stats = getStats();
+            const text = stats.xrtList.map(d => d.awb_no).join('\n');
+            navigator.clipboard.writeText(text).then(() => alert("Resi disalin!"));
+        }
+
+        window.exportCSV = function() {
+            const stats = getStats();
+            let csv = "AWB,Hub,Aktual,Seharusnya,Audit\n";
+            stats.xrtList.forEach(r => {
+                csv += `${r.awb_no},${r.hub},${r.actualStaging},${r.expectedStaging},${appState.manualReasons[r.awb_no]||''}\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'Laporan_XRT.csv';
+            a.click();
+        }
+
+    </script>
+</body>
+</html>
