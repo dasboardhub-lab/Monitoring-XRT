@@ -1,914 +1,1398 @@
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ops Report - XRT Monitoring</title>
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { 
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+    PieChart, Pie, Cell, LabelList
+} from 'recharts';
+import { 
+    Upload, FileText, ArrowRight, Filter, PieChart as PieChartIcon, 
+    BarChart2, Package, GitMerge, MapPin, ChevronDown, Check, X, Grid, Clock, Sparkles, Copy, Bot, Loader2,
+    AlertTriangle, CheckCircle2, TrendingUp, Building2, Activity, Search, User, MonitorCog, ChevronLeft, ChevronRight, Download, ClipboardCopy,
+    MonitorPlay, EyeOff, FileWarning, Trash2, Cloud, CloudOff, Calendar, History, Save, AlertOctagon
+} from 'lucide-react';
+
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, setDoc, collection, onSnapshot, query, orderBy, getDocs, writeBatch, serverTimestamp, deleteDoc } from "firebase/firestore";
+
+// --- FIREBASE CONFIGURATION ---
+const firebaseConfig = {
+    apiKey: "AIzaSyBBlbxiBpBR522JTI5xyxakGK9AEChXv1o",
+    authDomain: "dailyreport-cfc8f.firebaseapp.com",
+    projectId: "dailyreport-cfc8f",
+    storageBucket: "dailyreport-cfc8f.firebasestorage.app",
+    messagingSenderId: "963104518926",
+    appId: "1:963104518926:web:b822f34fe43ce3838c5d5f"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// --- SUB-KOMPONEN UI ---
+
+const Card = ({ children, className = "" }) => (
+    <div className={`bg-white rounded-xl border border-slate-200 shadow-sm ${className}`}>
+        {children}
+    </div>
+);
+
+const CardHeader = ({ title, subtitle, icon: Icon, action, children }) => (
+    <div className="px-5 py-4 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex gap-3 items-center">
+            {Icon && (
+                <div className="p-1.5 bg-slate-50 rounded-lg border border-slate-100">
+                    <Icon className="w-4 h-4 text-slate-500" />
+                </div>
+            )}
+            <div>
+                <h3 className="font-bold text-slate-800 text-sm leading-tight">{title}</h3>
+                {subtitle && <div className="text-xs text-slate-400 mt-0.5">{subtitle}</div>}
+            </div>
+        </div>
+        {/* Action / Children Area */}
+        <div className="flex items-center gap-2">
+            {action && <div>{action}</div>}
+            {children}
+        </div>
+    </div>
+);
+
+const KPICard = ({ title, value, subtext, trend, icon: Icon, color }) => {
+    const colorStyles = {
+        blue: "text-blue-600 bg-blue-50 border-blue-100",
+        emerald: "text-emerald-600 bg-emerald-50 border-emerald-100",
+        rose: "text-rose-600 bg-rose-50 border-rose-100",
+        amber: "text-amber-600 bg-amber-50 border-amber-100",
+        indigo: "text-indigo-600 bg-indigo-50 border-indigo-100",
+        slate: "text-slate-600 bg-slate-50 border-slate-100"
+    };
     
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    const style = colorStyles[color] || colorStyles.blue;
+
+    return (
+        <Card className="p-4 flex flex-col justify-between h-full hover:border-indigo-200 transition-all cursor-default">
+            <div className="flex justify-between items-start mb-2">
+                <div className={`p-2 rounded-lg border ${style}`}>
+                    <Icon className="w-4 h-4" />
+                </div>
+                {trend && (
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${color === 'rose' ? 'bg-red-50 text-red-600' : 'bg-slate-50 text-slate-500'}`}>
+                        {trend}
+                    </span>
+                )}
+            </div>
+            <div>
+                <div className="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">{value}</div>
+                <h4 className="text-slate-500 text-xs font-semibold uppercase tracking-wide">{title}</h4>
+                {subtext && <p className="text-[10px] text-slate-400 mt-1 font-medium">{subtext}</p>}
+            </div>
+        </Card>
+    );
+};
+
+// --- APP UTAMA ---
+
+export default function App() {
+    const todayDate = new Date().toLocaleDateString('id-ID', {
+        weekday: 'long', 
+        day: 'numeric', 
+        month: 'long', 
+        year: 'numeric'
+    });
+
+    const [data, setData] = useState([]);
+    const [fileName, setFileName] = useState("Belum ada file dipilih");
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
     
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    const [filterHub, setFilterHub] = useState("ALL");
+    const [selectedStagings, setSelectedStagings] = useState([]); 
+    const [isStagingDropdownOpen, setIsStagingDropdownOpen] = useState(false);
     
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    // --- FIREBASE STATE ---
+    const [user, setUser] = useState(null);
+    const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
+    const [manualReasons, setManualReasons] = useState({}); // { awb: 'Human' | 'System' }
+    const [availableDates, setAvailableDates] = useState([]); 
+    const [isHistoryDropdownOpen, setIsHistoryDropdownOpen] = useState(false);
+    const [loadingHistoryDate, setLoadingHistoryDate] = useState(null);
+    
+    // Save State
+    const [showSaveModal, setShowSaveModal] = useState(false);
+    const [saveDate, setSaveDate] = useState(new Date().toISOString().slice(0, 10));
+    const [isSaving, setIsSaving] = useState(false);
 
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    // Delete State
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .hide-scrollbar::-webkit-scrollbar { display: none; }
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        /* Modal Transitions */
-        .modal { opacity: 0; visibility: hidden; transition: all 0.2s ease-in-out; }
-        .modal.active { opacity: 1; visibility: visible; }
-        .modal-content { transform: scale(0.95); transition: all 0.2s ease-in-out; }
-        .modal.active .modal-content { transform: scale(1); }
-    </style>
-</head>
-<body class="bg-slate-100 text-slate-800 pb-20">
+    const [currentPage, setCurrentPage] = useState(1);
+    const itemsPerPage = 20;
 
-    <!-- HEADER -->
-    <div class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex flex-col md:flex-row items-center justify-between h-auto md:h-16 py-2 md:py-0 gap-2">
-                <!-- Branding -->
-                <div class="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
-                    <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-sm">
-                            <i data-lucide="building-2" class="w-5 h-5 text-white"></i>
-                        </div>
-                        <div>
-                            <h1 class="text-lg font-bold text-slate-800 leading-none">Ops Report</h1>
-                            <p class="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mt-0.5">
-                                XRT Monitoring <span id="connection-status" class="text-amber-500">• Connecting...</span>
-                            </p>
-                        </div>
-                    </div>
-                    <div class="hidden md:block h-8 w-px bg-slate-200 mx-2"></div>
-                    <div class="text-right md:text-left">
-                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Today</p>
-                        <p class="text-sm font-semibold text-slate-700" id="current-date">Loading...</p>
-                    </div>
-                </div>
+    const [showAiModal, setShowAiModal] = useState(false);
+    const [aiSummary, setAiSummary] = useState(null);
+    const [isAiLoading, setIsAiLoading] = useState(false); 
+    const [isFallbackMode, setIsFallbackMode] = useState(false);
+    
+    const [presentationMode, setPresentationMode] = useState(false);
 
-                <!-- Actions -->
-                <div class="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto bg-slate-50 md:bg-white p-2 md:p-0 rounded-lg">
-                    <input type="file" id="fileInput" accept=".csv,.txt" class="hidden">
-                    
-                    <button id="btn-upload" class="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 shadow-sm w-full md:w-auto justify-center">
-                        <i data-lucide="upload" class="w-4 h-4 text-indigo-500"></i> Upload CSV
-                    </button>
+    const dropdownRef = useRef(null); 
+    const historyRef = useRef(null);
+    const fileInputRef = useRef(null); 
+    
+    const API_KEY = "AIzaSyB9dowMAmZsQt64bdOvklZPd7lNDFzpTtE";
 
-                    <button id="btn-save" class="hidden flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-medium hover:bg-emerald-100 shadow-sm w-full md:w-auto justify-center">
-                        <i data-lucide="save" class="w-4 h-4"></i> Simpan
-                    </button>
-
-                    <!-- History Dropdown -->
-                    <div class="relative w-full md:w-auto">
-                        <button id="btn-history" class="flex items-center justify-between md:justify-start gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 w-full">
-                            <div class="flex items-center gap-2">
-                                <i data-lucide="history" class="w-4 h-4 text-slate-500"></i>
-                                <span>History</span>
-                            </div>
-                            <i data-lucide="chevron-down" class="w-3 h-3 text-slate-400"></i>
-                        </button>
-                        <div id="history-dropdown" class="hidden absolute top-full right-0 mt-1 w-full md:w-48 bg-white rounded-lg shadow-xl border border-slate-100 z-50 overflow-hidden max-h-60 overflow-y-auto">
-                            <!-- Filled by JS -->
-                        </div>
-                    </div>
-
-                    <div class="w-px h-6 bg-slate-200 mx-1 hidden sm:block"></div>
-
-                    <!-- Filters -->
-                    <select id="filter-hub" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg block w-full md:w-32 pl-2 pr-6 py-1.5 font-medium cursor-pointer">
-                        <option value="ALL">ALL HUBS</option>
-                    </select>
-
-                    <button id="btn-ai" class="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-all text-sm font-medium w-full md:w-auto justify-center">
-                        <i data-lucide="bot" class="w-4 h-4"></i> AI Analyst
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- MAIN CONTENT -->
-    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        
-        <!-- Empty State -->
-        <div id="empty-state" class="flex flex-col items-center justify-center py-20 animate-fade-in">
-            <div class="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 max-w-lg w-full text-center">
-                <div class="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <i data-lucide="activity" class="w-10 h-10 text-indigo-600"></i>
-                </div>
-                <h2 class="text-2xl font-bold text-slate-800 mb-2">Selamat Datang di Ops Report</h2>
-                <p class="text-slate-500 mb-8 leading-relaxed">Belum ada data. Silakan unggah CSV atau pilih history.</p>
-                <div class="grid grid-cols-2 gap-4">
-                    <button onclick="document.getElementById('fileInput').click()" class="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group">
-                        <i data-lucide="upload" class="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"></i>
-                        <span class="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Upload CSV</span>
-                    </button>
-                    <button onclick="toggleHistory()" class="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group">
-                        <i data-lucide="history" class="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"></i>
-                        <span class="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Buka History</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Dashboard Content (Hidden by default) -->
-        <div id="dashboard-content" class="hidden space-y-6 animate-fade-in">
-            
-            <!-- KPI Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <!-- KPI 1 -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="p-2 rounded-lg border text-blue-600 bg-blue-50 border-blue-100"><i data-lucide="package" class="w-4 h-4"></i></div>
-                    </div>
-                    <div>
-                        <div id="kpi-total" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
-                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Total Volume</h4>
-                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Paket dalam scope</p>
-                    </div>
-                </div>
-                <!-- KPI 2 -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="p-2 rounded-lg border text-emerald-600 bg-emerald-50 border-emerald-100"><i data-lucide="check-circle-2" class="w-4 h-4"></i></div>
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-slate-50 text-slate-500">On Track</span>
-                    </div>
-                    <div>
-                        <div id="kpi-clear" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
-                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Clear Status</h4>
-                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Rute Sesuai</p>
-                    </div>
-                </div>
-                <!-- KPI 3 -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="p-2 rounded-lg border text-rose-600 bg-rose-50 border-rose-100"><i data-lucide="alert-triangle" class="w-4 h-4"></i></div>
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-red-50 text-red-600">Attention</span>
-                    </div>
-                    <div>
-                        <div id="kpi-xrt" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0</div>
-                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Missroute (XRT)</h4>
-                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Kesalahan Jalur</p>
-                    </div>
-                </div>
-                <!-- KPI 4 -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 hover:border-indigo-200 transition-all">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="p-2 rounded-lg border text-amber-600 bg-amber-50 border-amber-100"><i data-lucide="trending-up" class="w-4 h-4"></i></div>
-                    </div>
-                    <div>
-                        <div id="kpi-rate" class="text-2xl font-bold text-slate-800 tracking-tight leading-none mb-1">0%</div>
-                        <h4 class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Error Rate</h4>
-                        <p class="text-[10px] text-slate-400 mt-1 font-medium">Persentase XRT</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Charts Section -->
-            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                <!-- Health Chart -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
-                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="activity" class="w-4 h-4 text-slate-500"></i></div>
-                        <h3 class="font-bold text-slate-800 text-sm">Operational Health</h3>
-                    </div>
-                    <div class="p-6 h-64 flex flex-col justify-center">
-                        <div class="mb-6 text-center">
-                            <div id="health-rate-text" class="text-5xl font-extrabold text-emerald-600 tracking-tight">0%</div>
-                            <p class="text-slate-400 font-medium mt-1 uppercase text-xs tracking-widest">Clear Status Rate</p>
-                        </div>
-                        <div class="w-full h-4 bg-slate-100 rounded-full overflow-hidden flex shadow-inner">
-                            <div id="health-bar-clear" class="h-full bg-emerald-500 transition-all duration-500" style="width: 0%"></div>
-                            <div id="health-bar-xrt" class="h-full bg-rose-500 transition-all duration-500" style="width: 0%"></div>
-                        </div>
-                        <div class="flex justify-between mt-3 text-xs font-bold uppercase tracking-wide">
-                            <span class="text-emerald-600">Clear: <span id="health-text-clear">0</span></span>
-                            <span class="text-rose-600">XRT: <span id="health-text-xrt">0</span></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- SLA Chart -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
-                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="clock" class="w-4 h-4 text-slate-500"></i></div>
-                        <h3 class="font-bold text-slate-800 text-sm">SLA Risk (XRT)</h3>
-                    </div>
-                    <div class="p-4 h-64 relative">
-                        <canvas id="slaChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- Audit Chart -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
-                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="search" class="w-4 h-4 text-slate-500"></i></div>
-                        <h3 class="font-bold text-slate-800 text-sm">Root Cause (Audit)</h3>
-                    </div>
-                    <div class="p-4 h-64 relative flex items-center justify-center">
-                        <canvas id="auditChart"></canvas>
-                        <!-- Center Text for Doughnut -->
-                        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span id="audit-total-center" class="text-2xl font-bold text-slate-700">0</span>
-                            <span class="text-[10px] text-slate-400 uppercase tracking-wider">Checked</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Top Locations -->
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-[400px]">
-                    <div class="px-5 py-4 border-b border-slate-100 flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="map-pin" class="w-4 h-4 text-slate-500"></i></div>
-                        <h3 class="font-bold text-slate-800 text-sm">Top Lokasi Nyasar</h3>
-                    </div>
-                    <div class="flex-1 overflow-y-auto scrollbar-thin">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-slate-50 text-slate-500 font-semibold sticky top-0 z-10 shadow-sm">
-                                <tr><th class="px-5 py-3 text-xs uppercase">Staging</th><th class="px-5 py-3 text-right text-xs uppercase">Jml</th></tr>
-                            </thead>
-                            <tbody id="top-loc-tbody" class="divide-y divide-slate-100">
-                                <!-- JS Generated -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Matrix Table -->
-            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
-                    <div class="flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="grid" class="w-4 h-4 text-slate-500"></i></div>
-                        <div>
-                            <h3 class="font-bold text-slate-800 text-sm leading-tight">Matriks Perpindahan</h3>
-                            <div class="text-xs text-slate-400 mt-0.5">Seharusnya (Baris) vs Aktual (Kolom)</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="overflow-x-auto max-h-[500px]" id="matrix-container">
-                    <!-- JS Generated Matrix -->
-                </div>
-            </div>
-
-            <!-- Detail Table -->
-            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                <div class="px-5 py-4 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center gap-4">
-                    <div class="flex gap-3 items-center">
-                        <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100"><i data-lucide="file-text" class="w-4 h-4 text-slate-500"></i></div>
-                        <div>
-                            <h3 class="font-bold text-slate-800 text-sm leading-tight">Detail Paket & Audit</h3>
-                            <div class="flex gap-4 mt-1 text-xs">
-                                <span class="flex items-center gap-1 text-slate-600 font-medium">
-                                    <i data-lucide="user" class="w-3 h-3 text-orange-500"></i> Human: <b id="stat-human">0</b>
-                                </span>
-                                <span class="flex items-center gap-1 text-slate-600 font-medium">
-                                    <i data-lucide="monitor-cog" class="w-3 h-3 text-blue-500"></i> System: <b id="stat-system">0</b>
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <button onclick="copyAllAwbs()" class="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md transition-colors border border-slate-200 text-xs font-bold flex items-center gap-1">
-                            <i data-lucide="clipboard-copy" class="w-3.5 h-3.5"></i> Copy Resi
-                        </button>
-                        <button onclick="exportCSV()" class="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md transition-colors border border-indigo-200 text-xs font-bold flex items-center gap-1">
-                            <i data-lucide="download" class="w-3.5 h-3.5"></i> Export
-                        </button>
-                    </div>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-xs whitespace-nowrap">
-                        <thead class="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider">
-                            <tr>
-                                <th class="p-3 border-b border-slate-200 text-center w-24">Audit</th>
-                                <th class="p-3 border-b border-slate-200">AWB No</th>
-                                <th class="p-3 border-b border-slate-200 max-w-xs">Alamat</th>
-                                <th class="p-3 border-b border-slate-200">Hub</th>
-                                <th class="p-3 border-b border-slate-200 bg-rose-50/50 text-rose-700">Aktual</th>
-                                <th class="p-3 border-b border-slate-200 text-center">Route</th>
-                                <th class="p-3 border-b border-slate-200 bg-emerald-50/50 text-emerald-700">Seharusnya</th>
-                            </tr>
-                        </thead>
-                        <tbody id="detail-table-body" class="divide-y divide-slate-100">
-                            <!-- JS Generated Rows -->
-                        </tbody>
-                    </table>
-                </div>
-                <!-- Pagination Simple -->
-                <div class="p-3 border-t border-slate-100 flex justify-end gap-2">
-                    <button id="prev-page" class="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><i data-lucide="chevron-left" class="w-4 h-4 text-slate-600"></i></button>
-                    <span id="page-indicator" class="text-[10px] font-bold text-slate-600 px-2 flex items-center">1 / 1</span>
-                    <button id="next-page" class="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><i data-lucide="chevron-right" class="w-4 h-4 text-slate-600"></i></button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- SAVE MODAL -->
-    <div id="save-modal" class="modal fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-        <div class="modal-content bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 border border-slate-200">
-            <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <i data-lucide="save" class="w-5 h-5 text-emerald-600"></i> Simpan Laporan
-            </h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-slate-600 mb-1">Pilih Tanggal</label>
-                    <input type="date" id="save-date-input" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
-                </div>
-                <p class="text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                    Data XRT dan hasil audit manual akan disimpan ke cloud.
-                </p>
-                <div class="flex justify-end gap-3 pt-2">
-                    <button onclick="toggleModal('save-modal', false)" class="px-4 py-2 text-slate-600 text-sm font-medium">Batal</button>
-                    <button onclick="saveReportToFirebase()" id="btn-confirm-save" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium">Simpan</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- AI MODAL -->
-    <div id="ai-modal" class="modal fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-        <div class="modal-content bg-white rounded-2xl shadow-2xl max-w-3xl w-full flex flex-col max-h-[90vh] overflow-hidden border border-slate-200">
-            <div class="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                <div class="flex items-center gap-4">
-                    <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
-                        <i data-lucide="bot" class="w-6 h-6 text-white"></i>
-                    </div>
-                    <div>
-                        <h3 class="font-bold text-slate-800 text-lg">AI Executive Analysis</h3>
-                        <p class="text-xs text-slate-500 font-medium">Powered by Gemini 1.5 Flash</p>
-                    </div>
-                </div>
-                <button onclick="toggleModal('ai-modal', false)" class="p-2 hover:bg-slate-200 rounded-full"><i data-lucide="x" class="w-5 h-5 text-slate-400"></i></button>
-            </div>
-            <div id="ai-content" class="p-8 overflow-y-auto space-y-6 bg-white min-h-[300px]">
-                <!-- Filled by JS -->
-                <div class="flex flex-col items-center justify-center h-48 gap-4">
-                    <i data-lucide="loader-2" class="w-8 h-8 text-indigo-600 animate-spin"></i>
-                    <p class="text-slate-500 font-medium text-sm animate-pulse">Sedang menganalisa data...</p>
-                </div>
-            </div>
-            <div class="p-5 border-t border-slate-100 bg-slate-50 flex justify-end">
-                <button onclick="toggleModal('ai-modal', false)" class="px-5 py-2 text-slate-600 border border-slate-200 rounded-lg text-sm font-medium hover:bg-white">Tutup</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Scripts -->
-    <script type="module">
-        // --- 1. CONFIG & IMPORTS ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-        import { getFirestore, doc, setDoc, collection, getDocs, writeBatch, serverTimestamp, query, orderBy, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyBBlbxiBpBR522JTI5xyxakGK9AEChXv1o",
-            authDomain: "dailyreport-cfc8f.firebaseapp.com",
-            projectId: "dailyreport-cfc8f",
-            storageBucket: "dailyreport-cfc8f.firebasestorage.app",
-            messagingSenderId: "963104518926",
-            appId: "1:963104518926:web:b822f34fe43ce3838c5d5f"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const API_KEY = "AIzaSyB9dowMAmZsQt64bdOvklZPd7lNDFzpTtE"; // Gemini API
-
-        // --- 2. GLOBAL STATE ---
-        let appState = {
-            data: [],
-            manualReasons: {}, // {awb: 'Human'|'System'}
-            user: null,
-            filterHub: "ALL",
-            currentPage: 1,
-            itemsPerPage: 20,
-            saveDate: new Date().toISOString().slice(0, 10),
-            charts: { sla: null, audit: null }
-        };
-
-        // --- 3. INIT & EVENT LISTENERS ---
-        document.addEventListener('DOMContentLoaded', () => {
-            lucide.createIcons();
-            
-            // Set Date
-            const options = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
-            document.getElementById('current-date').innerText = new Date().toLocaleDateString('id-ID', options);
-            document.getElementById('save-date-input').value = appState.saveDate;
-
-            // Auth Listener
-            onAuthStateChanged(auth, (user) => {
-                const statusEl = document.getElementById('connection-status');
-                if (user) {
-                    appState.user = user;
-                    statusEl.innerHTML = '<span class="text-emerald-500">• Online</span>';
-                    fetchHistoryList();
-                } else {
-                    signInAnonymously(auth).catch(e => console.error("Auth Err", e));
-                    statusEl.innerHTML = '<span class="text-amber-500">• Offline</span>';
-                }
-            });
-
-            // Listeners
-            document.getElementById('btn-upload').addEventListener('click', () => document.getElementById('fileInput').click());
-            document.getElementById('fileInput').addEventListener('change', handleFileUpload);
-            
-            document.getElementById('btn-save').addEventListener('click', () => toggleModal('save-modal', true));
-            document.getElementById('btn-confirm-save').addEventListener('click', saveReportToFirebase);
-            
-            document.getElementById('btn-history').addEventListener('click', toggleHistory);
-            
-            document.getElementById('filter-hub').addEventListener('change', (e) => {
-                appState.filterHub = e.target.value;
-                appState.currentPage = 1;
-                renderDashboard();
-            });
-
-            document.getElementById('prev-page').addEventListener('click', () => changePage(-1));
-            document.getElementById('next-page').addEventListener('click', () => changePage(1));
-            document.getElementById('btn-ai').addEventListener('click', runAiAnalysis);
-
-            // Expose global functions for onclick in HTML
-            window.toggleModal = toggleModal;
-            window.toggleHistory = toggleHistory;
-            window.setManualReason = setManualReason;
-            window.loadHistory = loadHistory;
-            window.deleteReport = deleteReport;
-            window.copyAllAwbs = copyAllAwbs;
-            window.exportCSV = exportCSV;
-        });
-
-        // --- 4. LOGIC FUNCTIONS ---
-
-        function handleFileUpload(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const text = event.target.result;
-                const rows = parseCSV(text);
-                processData(rows);
-            };
-            reader.readAsText(file);
-        }
-
-        function parseCSV(text) {
-            const lines = text.split('\n').filter(line => line.trim() !== '');
-            if (lines.length === 0) return [];
-            const headers = lines[0].split('|').map(h => h.trim().replace(/^"|"$/g, ''));
-            
-            return lines.slice(1).map(line => {
-                const vals = line.split('|');
-                let obj = {};
-                headers.forEach((h, i) => {
-                    obj[h] = vals[i] ? vals[i].trim().replace(/^"|"$/g, '') : '';
-                });
-                return obj;
-            });
-        }
-
-        function processData(rawData) {
-            const today = new Date();
-            today.setHours(0,0,0,0);
-
-            const processed = rawData
-                .filter(row => row.awb_no && row.awb_no.trim() !== "")
-                .map(row => {
-                    const actual = row.staging_operator_internal || "N/A";
-                    const expected = row.destination_staging || "N/A";
-                    const isXrt = actual !== expected;
-                    
-                    let slaStatus = "N/A";
-                    if (isXrt && row.expect_delivery_tm) {
-                        const edd = new Date(row.expect_delivery_tm);
-                        edd.setHours(0,0,0,0);
-                        if (!isNaN(edd)) {
-                            if (today < edd) slaStatus = "Before EDD";
-                            else if (today.getTime() === edd.getTime()) slaStatus = "Last Day";
-                            else slaStatus = "After EDD";
-                        }
-                    } else if (isXrt) slaStatus = "No EDD Data";
-
-                    return {
-                        ...row,
-                        actualStaging: actual,
-                        expectedStaging: expected,
-                        status: isXrt ? 'XRT' : 'CLEAR',
-                        hub: row.hub_operator_internal || "Unknown Hub",
-                        slaStatus,
-                        receiverAddress: row.receiver_address || "-",
-                        receiverDistrict: row.receiver_district_name || "-"
-                    };
-                })
-                .filter(r => !r.expectedStaging.includes("X9"));
-
-            appState.data = processed;
-            appState.manualReasons = {}; // reset audit
-            
-            // Populate Hub Filter
-            const hubs = ["ALL", ...new Set(processed.map(p => p.hub))].sort();
-            const filterEl = document.getElementById('filter-hub');
-            filterEl.innerHTML = hubs.map(h => `<option value="${h}">${h}</option>`).join('');
-            
-            renderDashboard();
-        }
-
-        function getStats() {
-            const filtered = appState.data.filter(d => 
-                appState.filterHub === "ALL" || d.hub === appState.filterHub
-            );
-
-            const total = filtered.length;
-            const xrtList = filtered.filter(d => d.status === 'XRT');
-            const clearCount = filtered.length - xrtList.length;
-            const xrtCount = xrtList.length;
-            
-            // SLA
-            const slaCount = { "Before EDD": 0, "Last Day": 0, "After EDD": 0 };
-            xrtList.forEach(d => { if(slaCount[d.slaStatus] !== undefined) slaCount[d.slaStatus]++; });
-
-            // Audit
-            let human = 0, system = 0;
-            xrtList.forEach(d => {
-                const r = appState.manualReasons[d.awb_no];
-                if (r === 'Human') human++;
-                if (r === 'System') system++;
-            });
-
-            // Top Locs
-            const locMap = {};
-            xrtList.forEach(d => locMap[d.actualStaging] = (locMap[d.actualStaging] || 0) + 1);
-            const topLocs = Object.entries(locMap).map(([name, count]) => ({name, count})).sort((a,b) => b.count - a.count);
-
-            return { total, xrtCount, clearCount, xrtList, slaCount, human, system, topLocs };
-        }
-
-        // --- 5. RENDER FUNCTIONS ---
-
-        function renderDashboard() {
-            const stats = getStats();
-
-            if (appState.data.length === 0) {
-                document.getElementById('empty-state').classList.remove('hidden');
-                document.getElementById('dashboard-content').classList.add('hidden');
-                document.getElementById('btn-save').classList.add('hidden');
-                return;
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                setIsStagingDropdownOpen(false);
             }
-
-            document.getElementById('empty-state').classList.add('hidden');
-            document.getElementById('dashboard-content').classList.remove('hidden');
-            document.getElementById('btn-save').classList.remove('hidden');
-
-            // Update KPIs
-            document.getElementById('kpi-total').innerText = stats.total.toLocaleString();
-            document.getElementById('kpi-clear').innerText = stats.clearCount.toLocaleString();
-            document.getElementById('kpi-xrt').innerText = stats.xrtCount.toLocaleString();
-            const rate = stats.total ? ((stats.xrtCount / stats.total) * 100).toFixed(2) : 0;
-            document.getElementById('kpi-rate').innerText = rate + "%";
-
-            // Update Health Bar
-            const clearRate = (100 - rate).toFixed(2);
-            document.getElementById('health-rate-text').innerText = clearRate + "%";
-            document.getElementById('health-bar-clear').style.width = clearRate + "%";
-            document.getElementById('health-bar-xrt').style.width = rate + "%";
-            document.getElementById('health-text-clear').innerText = stats.clearCount.toLocaleString();
-            document.getElementById('health-text-xrt').innerText = stats.xrtCount.toLocaleString();
-
-            // Update Audit Stats
-            document.getElementById('stat-human').innerText = stats.human;
-            document.getElementById('stat-system').innerText = stats.system;
-            document.getElementById('audit-total-center').innerText = (stats.human + stats.system);
-
-            // Render Charts
-            renderCharts(stats);
-
-            // Render Top Locations
-            const locHtml = stats.topLocs.map(l => `
-                <tr class="hover:bg-slate-50">
-                    <td class="px-5 py-2.5 font-medium text-slate-700 text-xs truncate max-w-[200px]">${l.name}</td>
-                    <td class="px-5 py-2.5 text-right font-bold text-rose-600 text-xs">${l.count}</td>
-                </tr>
-            `).join('');
-            document.getElementById('top-loc-tbody').innerHTML = locHtml;
-
-            // Render Matrix & Table
-            renderMatrix(stats.xrtList);
-            renderTable(stats.xrtList);
-
-            lucide.createIcons();
-        }
-
-        function renderCharts(stats) {
-            // SLA Chart
-            const slaCtx = document.getElementById('slaChart').getContext('2d');
-            if (appState.charts.sla) appState.charts.sla.destroy();
-            
-            appState.charts.sla = new Chart(slaCtx, {
-                type: 'bar',
-                data: {
-                    labels: ['Before EDD', 'Last Day', 'After EDD'],
-                    datasets: [{
-                        label: 'Paket',
-                        data: [stats.slaCount["Before EDD"], stats.slaCount["Last Day"], stats.slaCount["After EDD"]],
-                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
-                        borderRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: { y: { beginAtZero: true, grid: { display: true, color: '#f1f5f9' } }, x: { grid: { display: false } } }
-                }
-            });
-
-            // Audit Chart
-            const auditCtx = document.getElementById('auditChart').getContext('2d');
-            if (appState.charts.audit) appState.charts.audit.destroy();
-
-            const unchecked = stats.xrtCount - (stats.human + stats.system);
-            appState.charts.audit = new Chart(auditCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Human', 'System', 'Unchecked'],
-                    datasets: [{
-                        data: [stats.human, stats.system, unchecked],
-                        backgroundColor: ['#f97316', '#3b82f6', '#cbd5e1'],
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    cutout: '75%',
-                    plugins: { legend: { display: false } }
-                }
-            });
-        }
-
-        function renderMatrix(xrtList) {
-            const rows = new Set();
-            const cols = new Set();
-            const map = {};
-
-            xrtList.forEach(d => {
-                rows.add(d.expectedStaging);
-                cols.add(d.actualStaging);
-                if (!map[d.expectedStaging]) map[d.expectedStaging] = {};
-                if (!map[d.expectedStaging][d.actualStaging]) map[d.expectedStaging][d.actualStaging] = 0;
-                map[d.expectedStaging][d.actualStaging]++;
-            });
-
-            const sortedRows = Array.from(rows).sort();
-            const sortedCols = Array.from(cols).sort();
-
-            if (sortedRows.length === 0) {
-                document.getElementById('matrix-container').innerHTML = '<div class="p-4 text-center text-slate-400">No Data</div>';
-                return;
+            if (historyRef.current && !historyRef.current.contains(event.target)) {
+                setIsHistoryDropdownOpen(false);
             }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
 
-            let html = '<table class="w-full text-xs border-collapse"><thead class="bg-slate-50 sticky top-0 z-20 shadow-sm">';
-            html += `<tr><th class="p-3 border border-slate-200 bg-slate-100 sticky left-0 z-30 min-w-[150px] text-left">Seharusnya ↓</th>`;
-            sortedCols.forEach(c => html += `<th class="p-2 border border-slate-200 min-w-[80px] bg-white text-center">${c}</th>`);
-            html += '<th class="p-2 border border-slate-200 bg-slate-800 text-white sticky right-0 z-30">Total</th></tr></thead><tbody>';
-
-            sortedRows.forEach(r => {
-                let rowTotal = 0;
-                html += `<tr><td class="p-2 border border-slate-200 font-semibold text-slate-700 bg-slate-50 sticky left-0 z-10">${r}</td>`;
-                sortedCols.forEach(c => {
-                    const val = map[r] && map[r][c] ? map[r][c] : 0;
-                    rowTotal += val;
-                    const cell = val > 0 ? `<span class="font-bold text-slate-800">${val}</span>` : '<span class="text-slate-200">-</span>';
-                    html += `<td class="p-2 border border-slate-200 text-center">${cell}</td>`;
-                });
-                html += `<td class="p-2 border border-slate-200 bg-slate-800 text-white font-bold text-center sticky right-0 z-10">${rowTotal}</td></tr>`;
-            });
-
-            html += '</tbody></table>';
-            document.getElementById('matrix-container').innerHTML = html;
-        }
-
-        function renderTable(xrtList) {
-            const start = (appState.currentPage - 1) * appState.itemsPerPage;
-            const end = start + appState.itemsPerPage;
-            const pageData = xrtList.slice(start, end);
-
-            const tbody = document.getElementById('detail-table-body');
-            
-            if (pageData.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-400">No Data</td></tr>';
+    // --- FIREBASE AUTH & SYNC ---
+    useEffect(() => {
+        const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+            if (currentUser) {
+                setUser(currentUser);
+                setIsFirebaseConnected(true);
+                fetchAvailableDates(); 
             } else {
-                tbody.innerHTML = pageData.map(d => {
-                    const reason = appState.manualReasons[d.awb_no];
-                    const hActive = reason === 'Human' ? 'bg-orange-100 border-orange-300 text-orange-600' : 'bg-white border-slate-200 text-slate-300';
-                    const sActive = reason === 'System' ? 'bg-blue-100 border-blue-300 text-blue-600' : 'bg-white border-slate-200 text-slate-300';
-                    
-                    return `
-                    <tr class="hover:bg-indigo-50/30">
-                        <td class="p-2 bg-slate-50/30 text-center">
-                            <div class="flex justify-center gap-1">
-                                <button onclick="setManualReason('${d.awb_no}', 'Human')" class="w-6 h-6 rounded flex items-center justify-center border ${hActive}"><i data-lucide="user" class="w-3 h-3"></i></button>
-                                <button onclick="setManualReason('${d.awb_no}', 'System')" class="w-6 h-6 rounded flex items-center justify-center border ${sActive}"><i data-lucide="monitor-cog" class="w-3 h-3"></i></button>
-                            </div>
-                        </td>
-                        <td class="p-3 font-mono font-medium text-indigo-600">${d.awb_no}</td>
-                        <td class="p-3 text-slate-500 max-w-xs truncate" title="${d.receiverAddress}">
-                            <div class="font-bold text-slate-700">${d.receiverDistrict}</div>
-                            <div class="text-[10px]">${d.receiverAddress}</div>
-                        </td>
-                        <td class="p-3 text-slate-700">${d.hub}</td>
-                        <td class="p-3 bg-rose-50/20 text-rose-700 font-medium">${d.actualStaging}</td>
-                        <td class="p-3 text-center text-slate-300"><i data-lucide="arrow-right" class="w-3 h-3 mx-auto"></i></td>
-                        <td class="p-3 bg-emerald-50/20 text-emerald-700 font-medium">${d.expectedStaging}</td>
-                    </tr>
-                `}).join('');
-            }
-            
-            const totalPages = Math.ceil(xrtList.length / appState.itemsPerPage) || 1;
-            document.getElementById('page-indicator').innerText = `${appState.currentPage} / ${totalPages}`;
-            lucide.createIcons();
-        }
-
-        // --- 6. ACTIONS ---
-
-        function changePage(delta) {
-            const stats = getStats();
-            const totalPages = Math.ceil(stats.xrtList.length / appState.itemsPerPage) || 1;
-            const newPage = appState.currentPage + delta;
-            if (newPage >= 1 && newPage <= totalPages) {
-                appState.currentPage = newPage;
-                renderTable(stats.xrtList);
-            }
-        }
-
-        window.setManualReason = function(awb, reason) {
-            appState.manualReasons[awb] = reason;
-            renderDashboard(); // Re-render stats and table
-        }
-
-        // --- FIREBASE ACTIONS ---
-
-        window.saveReportToFirebase = async function() {
-            if (!appState.data.length) return;
-            const date = document.getElementById('save-date-input').value;
-            const btn = document.getElementById('btn-confirm-save');
-            btn.innerText = "Menyimpan...";
-            
-            try {
-                // 1. Save Summary
-                const stats = getStats();
-                await setDoc(doc(db, "daily_reports", date), {
-                    date,
-                    total: stats.total,
-                    xrtCount: stats.xrtCount,
-                    xrtRate: (stats.xrtCount/stats.total*100).toFixed(2),
-                    savedAt: serverTimestamp()
-                }, {merge: true});
-
-                // 2. Save Records (Batch) - Simplified logic for this demo
-                // Only saving manual audit changes to a 'records' subcollection
-                const batch = writeBatch(db);
-                let count = 0;
-                stats.xrtList.forEach(item => {
-                    const ref = doc(db, "daily_reports", date, "records", item.awb_no);
-                    batch.set(ref, {
-                        ...item,
-                        manualAudit: appState.manualReasons[item.awb_no] || null
-                    });
-                    count++;
+                signInAnonymously(auth).catch((err) => {
+                    console.error("Auth Failed:", err);
+                    setIsFirebaseConnected(false);
                 });
-
-                if (count > 0) await batch.commit();
-
-                alert("Berhasil disimpan!");
-                toggleModal('save-modal', false);
-                fetchHistoryList();
-            } catch (e) {
-                alert("Gagal: " + e.message);
-            } finally {
-                btn.innerText = "Simpan";
             }
-        }
+        });
+        return () => unsubscribeAuth();
+    }, []);
 
-        async function fetchHistoryList() {
+    // Fetch Unique Dates (Reports) from Firestore
+    const fetchAvailableDates = async () => {
+        try {
             const q = query(collection(db, "daily_reports"), orderBy("date", "desc"));
             const snapshot = await getDocs(q);
-            const container = document.getElementById('history-dropdown');
+            const dates = [];
+            snapshot.forEach(doc => {
+                dates.push(doc.id); // Doc ID is the date string YYYY-MM-DD
+            });
+            setAvailableDates(dates);
+        } catch (e) {
+            console.error("Error fetching dates:", e);
+        }
+    };
+
+    // --- SAVE REPORT FUNCTION (SMART BATCH WRITE) ---
+    const handleSaveReport = async () => {
+        if (!data || data.length === 0) {
+            alert("Tidak ada data untuk disimpan.");
+            return;
+        }
+
+        setIsSaving(true);
+        try {
+            // 1. AMBIL DATA LAMA (Untuk Cek Duplikat)
+            const recordsRef = collection(db, "daily_reports", saveDate, "records");
+            const snapshot = await getDocs(recordsRef);
+            const existingMap = new Map();
             
-            if (snapshot.empty) {
-                container.innerHTML = '<div class="p-3 text-xs text-slate-400">No history</div>';
+            snapshot.forEach(doc => {
+                existingMap.set(doc.id, doc.data().manualAudit || null);
+            });
+
+            // 2. FILTER & VALIDASI
+            const itemsToSave = [];
+            
+            data.forEach(item => {
+                const awb = String(item.awb_no);
+                const currentAudit = manualReasons[awb] || null;
+                const previousAudit = existingMap.get(awb);
+                const isExisting = existingMap.has(awb);
+
+                // LOGIKA: Simpan jika data baru ATAU audit berubah
+                let shouldSave = false;
+                if (!isExisting) {
+                    shouldSave = true;
+                } else if (currentAudit !== previousAudit) {
+                    shouldSave = true;
+                }
+
+                if (shouldSave) {
+                    itemsToSave.push({
+                        ...item,
+                        manualAudit: currentAudit
+                    });
+                }
+            });
+
+            if (itemsToSave.length === 0) {
+                alert("Semua data sudah tersimpan dan uptodate. Tidak ada perubahan baru.");
+                setIsSaving(false);
                 return;
             }
 
-            container.innerHTML = snapshot.docs.map(d => `
-                <div class="flex items-center justify-between px-3 py-2 border-b border-slate-50 hover:bg-indigo-50">
-                    <div onclick="loadHistory('${d.id}')" class="cursor-pointer flex-grow text-sm text-slate-700 font-medium">
-                        ${d.id}
-                    </div>
-                    <button onclick="deleteReport('${d.id}')" class="p-1 text-slate-300 hover:text-red-500"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
-                </div>
-            `).join('');
-            lucide.createIcons();
-        }
-
-        window.loadHistory = async function(dateStr) {
-            const snapshot = await getDocs(collection(db, "daily_reports", dateStr, "records"));
-            const loaded = [];
-            const reasons = {};
-            
-            snapshot.forEach(doc => {
-                const d = doc.data();
-                loaded.push(d);
-                if (d.manualAudit) reasons[d.awb_no] = d.manualAudit;
+            // 3. SORTING PRIORITAS (Fokus XRT Validasi)
+            itemsToSave.sort((a, b) => {
+                const aAudit = a.manualAudit ? 2 : 0;
+                const bAudit = b.manualAudit ? 2 : 0;
+                const aXrt = a.status === 'XRT' ? 1 : 0;
+                const bXrt = b.status === 'XRT' ? 1 : 0;
+                return (bAudit + bXrt) - (aAudit + aXrt);
             });
 
-            appState.data = loaded;
-            appState.manualReasons = reasons;
-            appState.saveDate = dateStr;
-            toggleHistory(); // Close dropdown
-            renderDashboard();
-        }
+            // 4. UPDATE SUMMARY LAPORAN
+            const reportRef = doc(db, "daily_reports", saveDate);
+            await setDoc(reportRef, {
+                date: saveDate,
+                total: stats.total,
+                xrtCount: stats.xrtCount,
+                xrtRate: stats.xrtRate,
+                manualStats: stats.manualStats,
+                savedAt: serverTimestamp(),
+                auditorId: user ? user.uid : 'anon'
+            }, { merge: true });
 
-        window.deleteReport = async function(dateStr) {
-            if(!confirm(`Hapus laporan ${dateStr}?`)) return;
-            try {
-                // Simplified delete (only main doc for demo, ideally delete subcollection too)
-                await deleteDoc(doc(db, "daily_reports", dateStr));
-                alert("Terhapus.");
-                fetchHistoryList();
-            } catch (e) { alert("Err: " + e.message); }
-        }
-
-        // --- AI ---
-        window.runAiAnalysis = async function() {
-            toggleModal('ai-modal', true);
-            const stats = getStats();
-            const prompt = `Analisa data logistik: Total ${stats.total}, XRT ${stats.xrtCount}, Audit Human Error ${stats.human}, System Error ${stats.system}. Top Lokasi Nyasar: ${stats.topLocs.slice(0,3).map(l=>l.name).join(', ')}. Berikan Executive Summary singkat, Root Cause, dan Rekomendasi dalam HTML format (gunakan tag <p>, <ul>, <li>, <b>). Bahasa Indonesia.`;
-
-            try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
-                    method: "POST", 
-                    headers: { "Content-Type": "application/json" }, 
-                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-                });
-                const result = await response.json();
-                const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "Gagal analisa.";
-                
-                // Simple cleanup of markdown code blocks if AI returns them
-                const cleanText = text.replace(/```html/g, '').replace(/```/g, '');
-                
-                document.getElementById('ai-content').innerHTML = `
-                    <div class="prose prose-sm max-w-none text-slate-700">
-                        ${cleanText}
-                    </div>
-                `;
-            } catch (e) {
-                document.getElementById('ai-content').innerHTML = `<p class="text-red-500">Error: ${e.message}</p>`;
+            // 5. EKSEKUSI BATCH WRITE
+            const batchSize = 500;
+            const chunks = [];
+            for (let i = 0; i < itemsToSave.length; i += batchSize) {
+                chunks.push(itemsToSave.slice(i, i + batchSize));
             }
-        }
 
-        // --- UTILS ---
-        function toggleModal(id, show) {
-            const el = document.getElementById(id);
-            if (show) el.classList.add('active');
-            else el.classList.remove('active');
-        }
+            for (const chunk of chunks) {
+                const batch = writeBatch(db);
+                chunk.forEach((item) => {
+                    const docId = item.awb_no ? String(item.awb_no) : doc(recordsRef).id;
+                    const docRef = doc(recordsRef, docId);
+                    batch.set(docRef, item);
+                });
+                await batch.commit();
+            }
 
-        function toggleHistory() {
-            const el = document.getElementById('history-dropdown');
-            el.classList.toggle('hidden');
+            alert(`Berhasil menyimpan ${itemsToSave.length} perubahan data ke laporan tanggal ${saveDate}.`);
+            setShowSaveModal(false);
+            fetchAvailableDates(); 
+        } catch (e) {
+            console.error("Save Error:", e);
+            alert("Gagal menyimpan laporan: " + e.message);
+        } finally {
+            setIsSaving(false);
         }
+    };
 
-        window.copyAllAwbs = function() {
-            const stats = getStats();
-            const text = stats.xrtList.map(d => d.awb_no).join('\n');
-            navigator.clipboard.writeText(text).then(() => alert("Resi disalin!"));
+    // --- DELETE REPORT FUNCTION ---
+    const handleDeleteClick = (dateStr, e) => {
+        e.stopPropagation();
+        setDeleteTarget(dateStr);
+        setShowDeleteModal(true);
+    };
+
+    const executeDelete = async () => {
+        if (!deleteTarget) return;
+
+        setIsDeleting(true);
+        try {
+            // 1. Hapus Subcollection "records"
+            const recordsRef = collection(db, "daily_reports", deleteTarget, "records");
+            const snapshot = await getDocs(recordsRef);
+            
+            const batchSize = 500;
+            let batch = writeBatch(db);
+            let count = 0;
+
+            for (const docSnapshot of snapshot.docs) {
+                batch.delete(docSnapshot.ref);
+                count++;
+                if (count >= batchSize) {
+                    await batch.commit();
+                    batch = writeBatch(db);
+                    count = 0;
+                }
+            }
+            if (count > 0) await batch.commit();
+
+            // 2. Hapus Dokumen Utama
+            await deleteDoc(doc(db, "daily_reports", deleteTarget));
+
+            // Jika data yang sedang tampil adalah data yang dihapus, bersihkan layar
+            if (saveDate === deleteTarget) {
+                setData([]);
+                setFileName("Belum ada file dipilih");
+            }
+            
+            fetchAvailableDates();
+            setShowDeleteModal(false);
+            setDeleteTarget(null);
+            alert("Laporan berhasil dihapus.");
+        } catch (err) {
+            console.error("Delete Error:", err);
+            alert("Gagal menghapus laporan: " + err.message);
+        } finally {
+            setIsDeleting(false);
         }
+    };
 
-        window.exportCSV = function() {
-            const stats = getStats();
-            let csv = "AWB,Hub,Aktual,Seharusnya,Audit\n";
-            stats.xrtList.forEach(r => {
-                csv += `${r.awb_no},${r.hub},${r.actualStaging},${r.expectedStaging},${appState.manualReasons[r.awb_no]||''}\n`;
+    // --- LOAD HISTORY FUNCTION ---
+    const loadHistoryByDate = async (dateStr) => {
+        setLoading(true);
+        setLoadingHistoryDate(dateStr); 
+        setFileName(`History Report: ${dateStr}`);
+        setSaveDate(dateStr);
+        setFilterHub("ALL");
+        setSelectedStagings([]);
+        
+        try {
+            const recordsRef = collection(db, "daily_reports", dateStr, "records");
+            const snapshot = await getDocs(recordsRef);
+            
+            const historyData = [];
+            const historyManualReasons = {};
+
+            if (snapshot.empty) {
+                setError(`Tidak ada data detail tersimpan untuk tanggal ${dateStr}`);
+                setData([]);
+            } else {
+                snapshot.forEach(doc => {
+                    const d = doc.data();
+                    historyData.push(d);
+                    if (d.manualAudit) {
+                        historyManualReasons[d.awb_no] = d.manualAudit;
+                    }
+                });
+
+                setData(historyData);
+                setManualReasons(historyManualReasons); 
+                setError("");
+            }
+        } catch (e) {
+            setError("Gagal memuat history: " + e.message);
+        } finally {
+            setLoading(false);
+            setLoadingHistoryDate(null); 
+            setIsHistoryDropdownOpen(false);
+        }
+    };
+
+    // --- LOGIKA DATA ---
+    const parseCSV = (text) => {
+        const lines = text.split('\n').filter(line => line.trim() !== '');
+        if (lines.length === 0) return [];
+        const headers = lines[0].split('|').map(h => h.trim().replace(/^"|"$/g, ''));
+        const result = [];
+        for (let i = 1; i < lines.length; i++) {
+            const currentLine = lines[i].split('|');
+            if (currentLine.length < headers.length) continue;
+            const obj = {};
+            headers.forEach((header, index) => {
+                let val = currentLine[index] ? currentLine[index].trim() : '';
+                val = val.replace(/^"|"$/g, ''); 
+                obj[header] = val;
             });
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = 'Laporan_XRT.csv';
-            a.click();
+            result.push(obj);
         }
+        return result;
+    };
 
-    </script>
-</body>
-</html>
+    const triggerFileUpload = () => {
+        fileInputRef.current.click();
+    }
+
+    const handleFileUpload = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        setFileName(file.name);
+        setLoading(true);
+        setError("");
+        
+        setUploadDate(new Date().toISOString());
+        // Reset manual reasons when uploading new file
+        setManualReasons({}); 
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target.result;
+                const rawData = parseCSV(text);
+                if (rawData && rawData.length > 0) {
+                    processData(rawData);
+                } else {
+                    setError("Format file tidak valid.");
+                    setLoading(false);
+                }
+            } catch (err) {
+                setError("Gagal: " + err.message);
+                setLoading(false);
+            }
+        };
+        reader.onerror = () => {
+            setError("Gagal membaca file.");
+            setLoading(false);
+        };
+        reader.readAsText(file);
+    };
+
+    const processData = (rawData) => {
+        const cleanData = rawData.filter(row => row.awb_no && row.awb_no.trim() !== "");
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const analyzedData = cleanData.map(row => {
+            const actualStaging = row.staging_operator_internal ? row.staging_operator_internal.trim() : "N/A";
+            const expectedStaging = row.destination_staging ? row.destination_staging.trim() : "N/A";
+            const isXrt = actualStaging !== expectedStaging;
+
+            // Address Parsing
+            const receiverAddress = row.receiver_address || "-";
+            const receiverDistrict = row.receiver_district_name || "-";
+
+            let slaStatus = "N/A";
+            let rawEdd = row.expect_delivery_tm;
+            if (isXrt && rawEdd) {
+                const eddDate = new Date(rawEdd);
+                eddDate.setHours(0, 0, 0, 0);
+                if (!isNaN(eddDate)) {
+                    if (today < eddDate) slaStatus = "Before EDD";
+                    else if (today.getTime() === eddDate.getTime()) slaStatus = "Last Day";
+                    else slaStatus = "After EDD";
+                } else slaStatus = "Invalid Date";
+            } else if (isXrt && !rawEdd) slaStatus = "No EDD Data";
+
+            return { 
+                ...row, 
+                actualStaging, 
+                expectedStaging, 
+                status: isXrt ? 'XRT' : 'CLEAR', 
+                hub: row.hub_operator_internal || "Unknown Hub", 
+                slaStatus, 
+                rawEdd,
+                receiverAddress,
+                receiverDistrict 
+            };
+        }).filter(row => !row.expectedStaging.includes("X9"));
+
+        setData(analyzedData);
+        setLoading(false);
+    };
+
+    // --- MEMOS & STATS ---
+    const hubs = useMemo(() => ["ALL", ...Array.from(new Set(data.map(d => d.hub))).sort()], [data]);
+    const stagings = useMemo(() => Array.from(new Set(data.map(d => d.actualStaging))).sort(), [data]);
+
+    const toggleStaging = (staging) => {
+        setSelectedStagings(prev => prev.includes(staging) ? prev.filter(s => s !== staging) : [...prev, staging]);
+        setCurrentPage(1);
+    };
+    const clearStagingSelection = () => {
+        setSelectedStagings([]);
+        setCurrentPage(1);
+    };
+
+    const handleReasonChange = (awb, reason) => {
+        setManualReasons(prev => ({ ...prev, [awb]: reason }));
+    };
+
+    const stats = useMemo(() => {
+        const emptyStats = {
+            total: 0, xrtCount: 0, clearCount: 0, xrtRate: 0, clearRate: 0, xrtList: [], topXrtLocations: [],
+            sortedPivotRows: [], sortedPivotCols: [], pivotMap: {}, filteredData: [], slaCount: { "After EDD": 0 }, 
+            slaChartData: [], auditChartData: [], manualStats: { human: 0, system: 0, totalChecked: 0 }
+        };
+
+        if (data.length === 0) return emptyStats;
+
+        const filteredData = data.filter(d => {
+            const matchHub = filterHub === "ALL" || d.hub === filterHub;
+            const matchStaging = selectedStagings.length === 0 || selectedStagings.includes(d.actualStaging);
+            return matchHub && matchStaging;
+        });
+
+        const total = filteredData.length;
+        const xrtList = filteredData.filter(d => d.status === 'XRT');
+        const clearList = filteredData.filter(d => d.status === 'CLEAR');
+        const xrtCount = xrtList.length;
+        const clearCount = clearList.length;
+        const xrtRate = total > 0 ? ((xrtCount / total) * 100).toFixed(2) : 0;
+        const clearRate = total > 0 ? ((clearCount / total) * 100).toFixed(2) : 0;
+
+        const xrtByLocation = {};
+        xrtList.forEach(item => { xrtByLocation[item.actualStaging] = (xrtByLocation[item.actualStaging] || 0) + 1; });
+        const topXrtLocations = Object.keys(xrtByLocation)
+            .map(key => ({ name: key, count: xrtByLocation[key] }))
+            .sort((a, b) => b.count - a.count);
+
+        const slaCount = { "Before EDD": 0, "Last Day": 0, "After EDD": 0, "No EDD Data": 0 };
+        xrtList.forEach(item => { if (slaCount[item.slaStatus] !== undefined) slaCount[item.slaStatus]++; else slaCount["No EDD Data"]++; });
+        
+        // SLA Donut Chart Data
+        const slaChartData = [
+            { name: "Before EDD", value: slaCount["Before EDD"], color: "#10b981" }, 
+            { name: "Last Day", value: slaCount["Last Day"], color: "#f59e0b" },   
+            { name: "After EDD", value: slaCount["After EDD"], color: "#ef4444" },  
+        ].filter(d => d.value > 0);
+
+        const pivotMap = {};
+        const pivotRowsSet = new Set();
+        const pivotColsSet = new Set();
+        
+        let manualHumanCount = 0;
+        let manualSystemCount = 0;
+
+        xrtList.forEach(item => {
+            const expected = item.expectedStaging;
+            const actual = item.actualStaging;
+            const reason = manualReasons[item.awb_no]; 
+
+            pivotRowsSet.add(expected);
+            pivotColsSet.add(actual);
+
+            if (!pivotMap[expected]) pivotMap[expected] = {};
+            if (!pivotMap[expected][actual]) pivotMap[expected][actual] = { total: 0, human: 0, system: 0 };
+
+            pivotMap[expected][actual].total += 1;
+            if (reason === 'Human') {
+                pivotMap[expected][actual].human += 1;
+                manualHumanCount++;
+            }
+            if (reason === 'System') {
+                pivotMap[expected][actual].system += 1;
+                manualSystemCount++;
+            }
+        });
+
+        const manualUnchecked = xrtCount - (manualHumanCount + manualSystemCount);
+        const auditChartData = [
+            { name: "Human Error", value: manualHumanCount, color: "#f97316" }, 
+            { name: "System Error", value: manualSystemCount, color: "#3b82f6" }, 
+            { name: "Belum Dicek", value: manualUnchecked, color: "#cbd5e1" }   
+        ].filter(d => d.value > 0);
+
+        return { 
+            total, xrtCount, clearCount, xrtRate, clearRate, xrtList, topXrtLocations, 
+            sortedPivotRows: Array.from(pivotRowsSet).sort(), sortedPivotCols: Array.from(pivotColsSet).sort(), pivotMap, 
+            filteredData, slaCount, slaChartData,
+            manualStats: { human: manualHumanCount, system: manualSystemCount, totalChecked: manualHumanCount + manualSystemCount },
+            auditChartData 
+        };
+    }, [data, filterHub, selectedStagings, manualReasons]);
+
+    const paginatedXrt = useMemo(() => {
+        if (!stats || !stats.xrtList) return [];
+        const start = (currentPage - 1) * itemsPerPage;
+        return stats.xrtList.slice(start, start + itemsPerPage);
+    }, [stats, currentPage]);
+
+    const totalPages = stats && stats.xrtList ? Math.ceil(stats.xrtList.length / itemsPerPage) : 0;
+
+    // --- DOWNLOAD & COPY ACTIONS ---
+    const handleDownloadData = () => {
+        if (!stats || stats.xrtList.length === 0) return;
+
+        const headers = ["No. AWB", "Alamat Penerima", "Kecamatan", "SLA Status", "EDD", "Hub", "Aktual", "Seharusnya", "Audit Manual"];
+        const rows = stats.xrtList.map(item => {
+            const reason = manualReasons[item.awb_no] || "Belum Dicek";
+            const safe = (text) => `"${(text || "").toString().replace(/"/g, '""')}"`;
+            return [
+                safe(item.awb_no), safe(item.receiverAddress), safe(item.receiverDistrict),
+                safe(item.slaStatus), safe(item.rawEdd), safe(item.hub),
+                safe(item.actualStaging), safe(item.expectedStaging), safe(reason)
+            ].join(",");
+        });
+
+        const csvContent = [headers.join(","), ...rows].join("\n");
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `Laporan_XRT_${new Date().toISOString().slice(0,10)}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const handleCopyAllAwbs = () => {
+        if (!stats || stats.xrtList.length === 0) return;
+        const allAwbs = stats.xrtList.map(item => item.awb_no).join('\n');
+        try {
+            const textArea = document.createElement("textarea");
+            textArea.value = allAwbs;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            alert(`Berhasil menyalin ${stats.xrtList.length} nomor resi.`);
+        } catch (err) { alert("Gagal menyalin resi."); }
+    };
+
+    // --- FALLBACK REPORT ---
+    const generateFallbackReport = () => {
+        if (!stats) return null;
+        const statusHealth = parseFloat(stats.xrtRate) < 2 ? "SEHAT" : parseFloat(stats.xrtRate) < 5 ? "WASPADA" : "KRITIS";
+        const topIssue = stats.topXrtLocations.length > 0 ? stats.topXrtLocations[0] : null;
+        const manualSummary = stats.manualStats.totalChecked > 0 
+            ? `Dari ${stats.manualStats.totalChecked} sampel audit, ditemukan ${stats.manualStats.human} Human Error dan ${stats.manualStats.system} System Error.`
+            : "Belum ada audit manual.";
+
+        return {
+            title: `Laporan Operasional (System Generated) - ${todayDate}`,
+            highlights: [`Status: ${statusHealth} (Rate: ${stats.xrtRate}%)`, `Volume: ${stats.total.toLocaleString()}, XRT: ${stats.xrtCount.toLocaleString()}.`, manualSummary],
+            topIssues: [topIssue ? `Lokasi tertinggi: ${topIssue.name} (${topIssue.count}).` : "Data lokasi minim.", `Over SLA: ${stats.slaCount["After EDD"]} paket.`],
+            slaImpact: `Risiko: ${(stats.slaCount["After EDD"] / stats.xrtCount * 100).toFixed(1)}% paket XRT telat.`,
+            recommendation: "Cek koneksi internet untuk analisa AI yang lebih tajam.",
+            rootCauseAnalysis: "Analisa AI tidak tersedia (Offline)."
+        };
+    };
+
+    // --- AI ANALYSIS ---
+    const generateAiAnalysis = async () => {
+        if (!stats || stats.total === 0) { alert("Tidak ada data."); return; }
+        setIsAiLoading(true); setShowAiModal(true); setAiSummary(null); setIsFallbackMode(false);
+
+        const top5PatternsStr = stats.sortedPivotRows.slice(0,5).map(r => r).join(", "); 
+        const manualAuditStr = stats.manualStats.totalChecked > 0 ? `Audit: ${stats.manualStats.human} Human, ${stats.manualStats.system} System` : "No Audit";
+        const addressSamples = stats.xrtList.slice(0, 5).map((item, idx) => `Sample ${idx+1}: ${item.receiverAddress} (Audit: ${manualReasons[item.awb_no]||'-'})`).join("\n");
+        const contextData = { total: stats.total, xrt: stats.xrtCount, rate: stats.xrtRate, audit: manualAuditStr };
+
+        const prompt = `Analisa data logistik: ${JSON.stringify(contextData)}. Samples: ${addressSamples}. Buat JSON Report: {title, highlights, rootCauseAnalysis, topIssues, slaImpact, recommendation} Bahasa Indonesia.`;
+
+        try {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+            });
+            if (!response.ok) throw new Error("API Limit");
+            const result = await response.json();
+            let text = result.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+            text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+            setAiSummary(JSON.parse(text));
+        } catch (error) {
+            setAiSummary(generateFallbackReport());
+            setIsFallbackMode(true);
+        } finally { setIsAiLoading(false); }
+    };
+
+    const copyToClipboard = () => {
+        if (!aiSummary) return;
+        const text = `*${aiSummary.title}*\n\n*Ringkasan:*\n${aiSummary.highlights?.map(h => `• ${h}`).join('\n')}\n\n*Analisa Akar Masalah:*\n${aiSummary.rootCauseAnalysis}\n\n*Fokus Masalah:*\n${aiSummary.topIssues?.map(i => `• ${i}`).join('\n')}\n\n*Analisa SLA:* ${aiSummary.slaImpact}\n\n*Rekomendasi:* ${aiSummary.recommendation}`;
+        const ta = document.createElement("textarea"); ta.value = text; ta.style.position="fixed"; ta.style.left="-9999px"; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+        alert("Salin sukses!");
+    };
+
+    const COLORS = ['#10b981', '#ef4444']; 
+
+    // --- LANDING PAGE ---
+    if (data.length === 0) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+                <div className="bg-white max-w-md w-full rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+                    <div className="bg-indigo-600 p-8 text-center">
+                        <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mx-auto mb-4">
+                            <Package className="w-8 h-8 text-white" />
+                        </div>
+                        <h1 className="text-2xl font-bold text-white mb-1">XRT Analytics</h1>
+                        <p className="text-indigo-200 text-sm">Operasional Performance Dashboard</p>
+                    </div>
+                    <div className="p-8">
+                        <p className="text-slate-600 text-center mb-6 text-sm leading-relaxed">
+                            Silakan unggah file laporan <b>.csv</b> (separator pipa `|`) untuk memulai analisa Missroute otomatis.
+                        </p>
+                        <div className="mb-4 text-xs text-slate-400 flex items-center justify-center gap-2">
+                             {isFirebaseConnected ? <span className="text-emerald-500 flex items-center gap-1"><Cloud className="w-3 h-3"/> Database Terhubung</span> : <span className="text-amber-500 flex items-center gap-1"><CloudOff className="w-3 h-3"/> Mode Offline</span>}
+                        </div>
+                        <label className="block w-full cursor-pointer group">
+                            <div className="border-2 border-dashed border-indigo-200 rounded-xl p-6 text-center transition-all group-hover:border-indigo-500 group-hover:bg-indigo-50">
+                                {loading ? (
+                                    <div className="flex flex-col items-center">
+                                        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+                                        <span className="text-sm font-medium text-indigo-600">Memproses Data...</span>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col items-center">
+                                        <Upload className="w-8 h-8 text-indigo-400 mb-2 group-hover:text-indigo-600" />
+                                        <span className="text-sm font-bold text-slate-700 group-hover:text-indigo-700">Pilih File CSV</span>
+                                        <span className="text-xs text-slate-400 mt-1">Mendukung format standar sistem</span>
+                                    </div>
+                                )}
+                            </div>
+                            <input type="file" accept=".csv,.txt" className="hidden" onChange={handleFileUpload} disabled={loading} />
+                        </label>
+                        {error && <div className="mt-4 p-3 bg-red-50 text-red-600 text-xs rounded-lg flex items-center gap-2 border border-red-100"><AlertTriangle className="w-4 h-4 flex-shrink-0"/> {error}</div>}
+                        
+                        {/* HISTORY IN LANDING */}
+                         <div className="mt-6 pt-6 border-t border-slate-100">
+                             <p className="text-xs font-semibold text-slate-400 mb-3 uppercase tracking-wider">Riwayat Laporan Tersimpan</p>
+                             <div className="flex flex-wrap gap-2 justify-center">
+                                {availableDates.length > 0 ? availableDates.map(date => (
+                                    <div 
+                                        key={date} 
+                                        className="group flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5 hover:bg-indigo-50 transition-all"
+                                    >
+                                        <div onClick={() => loadHistoryByDate(date)} className="flex items-center gap-1.5 cursor-pointer text-slate-600 text-xs hover:text-indigo-600">
+                                            <History className="w-3 h-3"/> {date}
+                                        </div>
+                                        <button 
+                                            onClick={(e) => handleDeleteClick(date, e)}
+                                            className="ml-1 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors opacity-0 group-hover:opacity-100"
+                                            title="Hapus"
+                                        >
+                                            <Trash2 className="w-3 h-3"/>
+                                        </button>
+                                    </div>
+                                )) : <span className="text-xs text-slate-300 italic">Belum ada history</span>}
+                             </div>
+                         </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // --- DASHBOARD LAYOUT ---
+    return (
+        <div className="min-h-screen bg-slate-100 font-sans pb-20">
+            {/* CORPORATE HEADER */}
+            <div className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+                <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex flex-col md:flex-row items-center justify-between h-auto md:h-16 py-2 md:py-0 gap-2">
+                        {/* Logo / Brand & Date */}
+                        <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-sm"><Building2 className="w-5 h-5 text-white" /></div>
+                                <div>
+                                    <h1 className="text-lg font-bold text-slate-800 leading-none">HUB Report</h1>
+                                    <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mt-0.5">
+                                        XRT Monitoring {isFirebaseConnected ? <span className="text-emerald-500">• Online</span> : <span className="text-amber-500">• Offline</span>}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="hidden md:block h-8 w-px bg-slate-200 mx-2"></div>
+                            <div className="text-right md:text-left">
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Today</p>
+                                <p className="text-sm font-semibold text-slate-700">{todayDate}</p>
+                            </div>
+                        </div>
+
+                        {/* ACTIONS */}
+                        {!presentationMode && (
+                        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto bg-slate-50 md:bg-white p-2 md:p-0 rounded-lg">
+                            <input type="file" accept=".csv,.txt" className="hidden" ref={fileInputRef} onChange={handleFileUpload} disabled={loading}/>
+                            
+                            {/* Upload */}
+                            <button onClick={triggerFileUpload} className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 shadow-sm">
+                                {loading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Upload className="w-4 h-4 text-indigo-500"/>}
+                                {loading ? "Loading..." : "Upload CSV"}
+                            </button>
+
+                            {/* Save Button */}
+                            {data.length > 0 && (
+                                <button onClick={() => setShowSaveModal(true)} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-sm font-medium hover:bg-emerald-100 shadow-sm">
+                                    <Save className="w-4 h-4"/> Simpan
+                                </button>
+                            )}
+
+                            {/* History */}
+                            <div className="relative" ref={historyRef}>
+                                <button 
+                                    onClick={() => setIsHistoryDropdownOpen(!isHistoryDropdownOpen)}
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 hover:border-indigo-300 transition-all shadow-sm"
+                                >
+                                    <History className="w-4 h-4 text-slate-500"/>
+                                    <span>History</span>
+                                    <ChevronDown className="w-3 h-3 text-slate-400"/>
+                                </button>
+                                {isHistoryDropdownOpen && (
+                                    <div className="absolute top-full right-0 mt-1 w-48 bg-white rounded-lg shadow-xl border border-slate-100 z-50 overflow-hidden max-h-60 overflow-y-auto">
+                                        <div className="p-2 border-b bg-slate-50 text-[10px] font-bold text-slate-400 uppercase">Saved Reports</div>
+                                        {availableDates.length > 0 ? availableDates.map(date => (
+                                            <div 
+                                                key={date} 
+                                                className="group flex items-center justify-between px-3 py-2.5 hover:bg-indigo-50 transition-colors border-b border-slate-50 last:border-0"
+                                            >
+                                                <div 
+                                                    onClick={() => loadHistoryByDate(date)}
+                                                    className="flex items-center gap-2 cursor-pointer flex-grow min-w-0"
+                                                >
+                                                    {loadingHistoryDate === date ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500"/> : <Calendar className="w-3.5 h-3.5 text-indigo-500"/>}
+                                                    <span className={`text-sm font-medium ${loadingHistoryDate === date ? 'text-indigo-600' : 'text-slate-700'} group-hover:text-indigo-700`}>{date}</span>
+                                                </div>
+                                                <button 
+                                                    onClick={(e) => handleDeleteClick(date, e)}
+                                                    className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                                    title={`Hapus Laporan ${date}`}
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        )) : <div className="p-3 text-xs text-slate-400 text-center">No History</div>}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="w-px h-6 bg-slate-200 mx-1 hidden sm:block"></div>
+
+                            {/* Filters */}
+                            <div className="flex gap-2">
+                                <select className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg block w-32 pl-2 pr-6 py-1.5 font-medium cursor-pointer" value={filterHub} onChange={(e) => setFilterHub(e.target.value)}>
+                                    {hubs.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                                {/* Staging Filter */}
+                                <div className="relative w-40" ref={dropdownRef}>
+                                    <button 
+                                        className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg w-full pl-3 pr-8 py-1.5 font-medium text-left flex items-center justify-between shadow-sm hover:bg-white transition-colors"
+                                        onClick={() => setIsStagingDropdownOpen(!isStagingDropdownOpen)}
+                                    >
+                                        <span className="truncate">{selectedStagings.length === 0 ? "All SS" : `${selectedStagings.length} Selected`}</span>
+                                        <ChevronDown className="absolute right-2.5 top-2 h-3.5 w-3.5 text-slate-400"/>
+                                    </button>
+                                    {isStagingDropdownOpen && (
+                                        <div className="absolute top-full right-0 mt-1 w-64 bg-white rounded-lg shadow-xl border border-slate-100 z-50 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-100">
+                                            <div className="p-2 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+                                                <span className="text-[10px] font-bold text-slate-500 uppercase">Pilih Staging</span>
+                                                {selectedStagings.length > 0 && <button onClick={clearStagingSelection} className="text-[10px] text-rose-500 font-bold hover:underline">Clear</button>}
+                                            </div>
+                                            <div className="max-h-60 overflow-y-auto p-1">
+                                                {stagings.map(s => (
+                                                    <div key={s} onClick={() => toggleStaging(s)} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs ${selectedStagings.includes(s) ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50 text-slate-600'}`}>
+                                                        <div className={`w-3 h-3 rounded border flex items-center justify-center ${selectedStagings.includes(s) ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300'}`}>
+                                                            {selectedStagings.includes(s) && <Check className="w-2 h-2 text-white"/>}
+                                                        </div>
+                                                        <span className="truncate">{s}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            
+                            <button onClick={generateAiAnalysis} className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-all text-sm font-medium">
+                                <Bot className="w-4 h-4" /> AI Analyst
+                            </button>
+                        </div>
+                        )}
+                        <button onClick={() => setPresentationMode(!presentationMode)} className="p-1.5 rounded-lg border bg-white border-slate-200 text-slate-400 hover:bg-slate-50" title="Presentation Mode">
+                            {presentationMode ? <EyeOff className="w-4 h-4" /> : <MonitorPlay className="w-4 h-4" />}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+                
+                {/* --- KONTEN DASHBOARD / EMPTY STATE --- */}
+                {data.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-20 animate-fade-in-up">
+                        <div className="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 max-w-lg w-full text-center">
+                            <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <Activity className="w-10 h-10 text-indigo-600" />
+                            </div>
+                            <h2 className="text-2xl font-bold text-slate-800 mb-2">Selamat Datang di Ops Report</h2>
+                            <p className="text-slate-500 mb-8 leading-relaxed">
+                                Belum ada data yang ditampilkan. Silakan unggah file CSV baru atau pilih laporan dari riwayat yang tersimpan.
+                            </p>
+                            
+                            <div className="grid grid-cols-2 gap-4 mb-6">
+                                <button onClick={triggerFileUpload} className="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all group">
+                                    <Upload className="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"/>
+                                    <span className="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Upload CSV</span>
+                                </button>
+                                <button onClick={() => setIsHistoryDropdownOpen(true)} className="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all group">
+                                    <History className="w-6 h-6 text-slate-400 group-hover:text-indigo-600 mb-2"/>
+                                    <span className="text-sm font-semibold text-slate-600 group-hover:text-indigo-700">Buka History</span>
+                                </button>
+                            </div>
+
+                            {/* Quick History Access */}
+                            {availableDates.length > 0 && (
+                                <div className="border-t border-slate-100 pt-6">
+                                    <p className="text-xs font-bold text-slate-400 uppercase mb-3">Laporan Terakhir</p>
+                                    <div className="flex flex-wrap gap-2 justify-center">
+                                        {availableDates.slice(0, 3).map(date => (
+                                            <button 
+                                                key={date} 
+                                                onClick={() => loadHistoryByDate(date)}
+                                                className="px-3 py-1.5 bg-slate-50 text-slate-600 text-xs rounded-full border border-slate-200 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all flex items-center gap-1.5"
+                                            >
+                                                {loadingHistoryDate === date ? <Loader2 className="w-3 h-3 animate-spin"/> : <Calendar className="w-3 h-3"/>}
+                                                {date}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                    {/* 2. EXECUTIVE SUMMARY CARDS */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <KPICard title="Total Volume" value={stats.total.toLocaleString()} subtext="Paket dalam scope" icon={Package} color="blue" />
+                        <KPICard title="Clear Status" value={stats.clearCount.toLocaleString()} subtext="Rute Sesuai" trend="On Track" icon={CheckCircle2} color="emerald" />
+                        <KPICard title="Missroute (XRT)" value={stats.xrtCount.toLocaleString()} subtext="Kesalahan Jalur" trend="Attention" icon={AlertTriangle} color="rose" />
+                        <KPICard title="Error Rate" value={`${stats.xrtRate}%`} subtext="Persentase XRT" icon={TrendingUp} color="amber" />
+                    </div>
+
+                    {/* 3. CHART SECTION */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                        {/* Status Distribution */}
+                        <Card className="flex flex-col">
+                            <CardHeader title="Operational Health" icon={Activity} />
+                            <div className="p-6 h-64 flex flex-col justify-center">
+                                <div className="mb-6 text-center">
+                                    <div className="text-5xl font-extrabold text-emerald-600 tracking-tight">{stats.clearRate}%</div>
+                                    <p className="text-slate-400 font-medium mt-1 uppercase text-xs tracking-widest">Clear Status Rate</p>
+                                </div>
+                                <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden flex shadow-inner">
+                                    <div className="h-full bg-emerald-500" style={{ width: `${stats.clearRate}%` }}></div>
+                                    <div className="h-full bg-rose-500" style={{ width: `${stats.xrtRate}%` }}></div>
+                                </div>
+                                <div className="flex justify-between mt-3 text-xs font-bold uppercase tracking-wide">
+                                    <span className="text-emerald-600">Clear: {stats.clearCount.toLocaleString()}</span>
+                                    <span className="text-rose-600">XRT: {stats.xrtCount.toLocaleString()}</span>
+                                </div>
+                            </div>
+                            <div className="px-5 pb-5 pt-0">
+                                <table className="min-w-full text-xs text-left border-t border-slate-100 mt-2">
+                                    <tbody className="divide-y divide-slate-100">
+                                        <tr><td className="py-2 text-slate-500">Processed</td><td className="py-2 text-right font-bold text-slate-700">{stats.total.toLocaleString()}</td></tr>
+                                        <tr><td className="py-2 text-slate-500">Target</td><td className="py-2 text-right font-bold text-slate-400">99.0%</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+
+                        {/* SLA Breakdown (Donut) */}
+                        <Card className="flex flex-col">
+                            <CardHeader title="SLA Risk (XRT)" icon={Clock} />
+                            <div className="p-4 h-64 relative">
+                                {stats.slaChartData.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <PieChart>
+                                            <Pie
+                                                data={stats.slaChartData}
+                                                cx="50%"
+                                                cy="50%"
+                                                innerRadius={60}
+                                                outerRadius={80}
+                                                paddingAngle={5}
+                                                dataKey="value"
+                                            >
+                                                {stats.slaChartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                                            </Pie>
+                                            <Tooltip contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'}} />
+                                        </PieChart>
+                                    </ResponsiveContainer>
+                                ) : <div className="h-full flex items-center justify-center text-slate-400 text-sm">No Data</div>}
+                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                    <span className="text-2xl font-bold text-slate-700">{stats.xrtCount.toLocaleString()}</span>
+                                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">Total XRT</span>
+                                </div>
+                            </div>
+                            <div className="px-5 pb-5 pt-0">
+                                <table className="min-w-full text-xs text-left border-t border-slate-100">
+                                    <tbody className="divide-y divide-slate-100">
+                                        {stats.slaChartData.map((item, i) => (
+                                            <tr key={i}>
+                                                <td className="py-2 flex items-center gap-2 font-medium text-slate-600"><div className="w-2 h-2 rounded-full" style={{backgroundColor: item.color}}></div>{item.name}</td>
+                                                <td className="py-2 text-right font-bold text-slate-700">{item.value.toLocaleString()}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+
+                        {/* Audit Manual Breakdown */}
+                        <Card className="flex flex-col">
+                            <CardHeader title="Root Cause (Audit)" icon={Search} />
+                            <div className="p-4 h-64 relative">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie 
+                                            data={stats.auditChartData} 
+                                            cx="50%" cy="50%" 
+                                            innerRadius={60} outerRadius={80} 
+                                            paddingAngle={5} 
+                                            dataKey="value" 
+                                        >
+                                            {stats.auditChartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                                        </Pie>
+                                        <Tooltip contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'}} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                    <span className="text-2xl font-bold text-slate-700">{stats.manualStats.totalChecked}</span>
+                                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">Checked</span>
+                                </div>
+                            </div>
+                            <div className="px-5 pb-5 pt-2">
+                                <table className="min-w-full text-xs text-left border-t border-slate-100">
+                                    <tbody className="divide-y divide-slate-100">
+                                        {stats.auditChartData.map((item, i) => (
+                                            <tr key={i}>
+                                                <td className="py-2 flex items-center gap-2 font-medium text-slate-600">
+                                                    <div className="w-2 h-2 rounded-full" style={{backgroundColor: item.color}}></div>
+                                                    {item.name}
+                                                </td>
+                                                <td className="py-2 text-right font-bold text-slate-700">{item.value.toLocaleString()}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+
+                        {/* Top Locations */}
+                        <Card className="flex flex-col h-[400px]">
+                            <CardHeader title="Top Lokasi Nyasar" icon={MapPin} />
+                            <div className="flex-1 overflow-y-auto p-0 scrollbar-thin">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-slate-50 text-slate-500 font-semibold sticky top-0 z-10 shadow-sm">
+                                        <tr><th className="px-5 py-3 text-xs uppercase">Staging</th><th className="px-5 py-3 text-right text-xs uppercase">Jml</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {stats.topXrtLocations.map((loc, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-50">
+                                                <td className="px-5 py-2.5 font-medium text-slate-700 text-xs truncate max-w-[200px]">{loc.name}</td>
+                                                <td className="px-5 py-2.5 text-right font-bold text-rose-600 text-xs">{loc.count.toLocaleString()}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+                    </div>
+
+                    {/* 4. MATRIX TABLE */}
+                    <Card className="overflow-hidden">
+                        <CardHeader title="Matriks Perpindahan" icon={Grid} subtitle="Seharusnya (Baris) vs Aktual (Kolom)" />
+                        <div className="overflow-x-auto max-h-[500px]">
+                            {stats.sortedPivotRows.length > 0 ? (
+                                <table className="w-full text-xs border-collapse">
+                                    <thead className="bg-slate-50 sticky top-0 z-20 shadow-sm text-slate-500 font-bold uppercase tracking-wider">
+                                        <tr>
+                                            <th className="p-4 border border-slate-200 bg-slate-100 sticky left-0 z-30 min-w-[200px] text-left">
+                                                Seharusnya Ke ↓
+                                            </th>
+                                            {stats.sortedPivotCols.map(col => (
+                                                <th key={col} className="p-3 border border-slate-200 min-w-[100px] text-center bg-white text-slate-700">
+                                                    {col}
+                                                </th>
+                                            ))}
+                                            <th className="p-3 border border-slate-200 bg-slate-800 text-white min-w-[80px] text-center sticky right-0 z-30 font-bold">
+                                                Total
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {stats.sortedPivotRows.map((row, rowIndex) => {
+                                            let rowTotal = 0;
+                                            return (
+                                                <tr key={row} className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                                                    <td className="p-3 border border-slate-200 font-semibold text-slate-700 bg-slate-50 sticky left-0 z-10">
+                                                        {row}
+                                                    </td>
+                                                    {stats.sortedPivotCols.map(col => {
+                                                        const cellData = stats.pivotMap[row] && stats.pivotMap[row][col];
+                                                        const val = cellData ? cellData.total : 0;
+                                                        const humanVal = cellData ? cellData.human : 0;
+                                                        const systemVal = cellData ? cellData.system : 0;
+                                                        
+                                                        rowTotal += val;
+                                                        
+                                                        return (
+                                                            <td key={`${row}-${col}`} className="p-2 border border-slate-200 text-center align-middle h-14">
+                                                                {val > 0 ? (
+                                                                    <div className="flex items-center justify-center gap-3">
+                                                                        <span className="text-xl font-bold text-slate-700 tracking-tight">{val}</span>
+                                                                        {(humanVal > 0 || systemVal > 0) && (
+                                                                            <div className="flex flex-col items-start gap-0.5 text-[9px] font-medium opacity-80 border-l border-slate-200 pl-2">
+                                                                                <div className="flex items-center gap-1 text-orange-600"><User className="w-2.5 h-2.5" /> <span>{humanVal}</span></div>
+                                                                                <div className="flex items-center gap-1 text-blue-600"><MonitorCog className="w-2.5 h-2.5" /> <span>{systemVal}</span></div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ) : <span className="text-slate-200">-</span>}
+                                                            </td>
+                                                        );
+                                                    })}
+                                                    <td className="p-3 border border-slate-200 text-center font-bold bg-slate-800 text-white sticky right-0 z-10">
+                                                        {rowTotal}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            ) : <div className="p-10 text-center text-slate-400 italic">Data matriks tidak tersedia untuk filter ini.</div>}
+                        </div>
+                        {/* NOTE FOOTER UNTUK MATRIKS */}
+                        <div className="p-3 bg-slate-50 border-t border-slate-100 text-xs text-slate-500 flex flex-wrap items-center gap-x-6 gap-y-2">
+                            <span className="font-bold text-slate-700">Cara Baca:</span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-base font-bold text-slate-700">45</span>
+                                <span>= Total Paket</span>
+                            </div>
+                            <div className="flex items-center gap-2 pl-4 border-l border-slate-300">
+                                <div className="flex flex-col gap-0.5 text-[9px] font-medium">
+                                    <span className="flex items-center gap-1 text-orange-600"><User className="w-2.5 h-2.5"/> 3</span>
+                                    <span className="flex items-center gap-1 text-blue-600"><MonitorCog className="w-2.5 h-2.5"/> 42</span>
+                                </div>
+                                <span>= <span className="text-orange-600 font-medium">Human</span> / <span className="text-blue-600 font-medium">System</span> Error (Berdasarkan Audit)</span>
+                            </div>
+                        </div>
+                    </Card>
+
+                    {/* 5. DATA TABLE (All Data with Checkbox) */}
+                    <Card className="overflow-hidden">
+                        <CardHeader 
+                            title="Detail Data Paket & Audit Manual" 
+                            icon={FileText} 
+                            subtitle={
+                                <div className="flex gap-4 mt-1 text-xs">
+                                    <span className="flex items-center gap-1 text-slate-600 font-medium">
+                                        <User className="w-3 h-3 text-orange-500" /> Human: <b>{stats.manualStats.human}</b>
+                                    </span>
+                                    <span className="flex items-center gap-1 text-slate-600 font-medium">
+                                        <MonitorCog className="w-3 h-3 text-blue-500" /> System: <b>{stats.manualStats.system}</b>
+                                    </span>
+                                </div>
+                            }
+                            action={
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={handleCopyAllAwbs}
+                                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md transition-colors border border-slate-200 text-xs font-bold flex items-center gap-1"
+                                        title="Copy All Shown AWBs"
+                                    >
+                                        <ClipboardCopy className="w-3.5 h-3.5" />
+                                        <span className="hidden sm:inline">Copy All Resi</span>
+                                    </button>
+                                    <button onClick={handleDownloadData} className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md transition-colors border border-indigo-200 text-xs font-bold flex items-center gap-1">
+                                        <Download className="w-3.5 h-3.5" />
+                                        <span className="hidden sm:inline">Export</span>
+                                    </button>
+                                    <div className="flex items-center gap-1 bg-white rounded-md border border-slate-200 p-0.5">
+                                        <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><ChevronLeft className="w-4 h-4 text-slate-600"/></button>
+                                        <span className="text-[10px] font-bold text-slate-600 px-2 min-w-[60px] text-center">{currentPage} / {totalPages}</span>
+                                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><ChevronRight className="w-4 h-4 text-slate-600"/></button>
+                                    </div>
+                                </div>
+                            }
+                        />
+                        
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs whitespace-nowrap">
+                                <thead className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider">
+                                    <tr>
+                                        <th className="p-3 border-b border-slate-200 text-center w-24">Audit</th>
+                                        <th className="p-3 border-b border-slate-200">AWB No</th>
+                                        <th className="p-3 border-b border-slate-200 max-w-xs">Alamat</th>
+                                        <th className="p-3 border-b border-slate-200">Hub</th>
+                                        <th className="p-3 border-b border-slate-200 bg-rose-50/50 text-rose-700">Aktual</th>
+                                        <th className="p-3 border-b border-slate-200 text-center">Route</th>
+                                        <th className="p-3 border-b border-slate-200 bg-emerald-50/50 text-emerald-700">Seharusnya</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {paginatedXrt.length > 0 ? paginatedXrt.map((row) => (
+                                        <tr key={row.awb_no} className="hover:bg-indigo-50/30 transition-colors">
+                                            <td className="p-2 bg-slate-50/30 text-center">
+                                                <div className="flex justify-center gap-1">
+                                                    <button onClick={() => handleReasonChange(row.awb_no, 'Human')} className={`w-6 h-6 rounded flex items-center justify-center border ${manualReasons[row.awb_no] === 'Human' ? 'bg-orange-100 border-orange-300 text-orange-600' : 'bg-white border-slate-200 text-slate-300 hover:border-orange-200'}`} title="Human Error"><User className="w-3 h-3" /></button>
+                                                    <button onClick={() => handleReasonChange(row.awb_no, 'System')} className={`w-6 h-6 rounded flex items-center justify-center border ${manualReasons[row.awb_no] === 'System' ? 'bg-blue-100 border-blue-300 text-blue-600' : 'bg-white border-slate-200 text-slate-300 hover:border-blue-200'}`} title="System Error"><MonitorCog className="w-3 h-3" /></button>
+                                                </div>
+                                            </td>
+                                            <td className="p-3 font-mono font-medium text-indigo-600">{row.awb_no}</td>
+                                            <td className="p-3 text-slate-500 max-w-xs truncate" title={row.receiverAddress}>
+                                                <div className="font-bold text-slate-700">{row.receiverDistrict}</div>
+                                                <div className="text-[10px]">{row.receiverAddress}</div>
+                                            </td>
+                                            <td className="p-3 text-slate-700">{row.hub}</td>
+                                            <td className="p-3 bg-rose-50/20 text-rose-700 font-medium">{row.actualStaging}</td>
+                                            <td className="p-3 text-center text-slate-300"><ArrowRight className="w-3 h-3 mx-auto"/></td>
+                                            <td className="p-3 bg-emerald-50/20 text-emerald-700 font-medium">{row.expectedStaging}</td>
+                                        </tr>
+                                    )) : <tr><td colSpan="8" className="p-8 text-center text-slate-400 italic">No Data</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+                    </>
+                )}
+            </div>
+
+            {/* SAVE MODAL */}
+            {showSaveModal && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 border border-slate-200">
+                        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                            <Save className="w-5 h-5 text-emerald-600"/> Simpan Laporan
+                        </h3>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-600 mb-1">Pilih Tanggal Laporan</label>
+                                <input 
+                                    type="date" 
+                                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                                    value={saveDate}
+                                    onChange={(e) => setSaveDate(e.target.value)}
+                                />
+                            </div>
+                            <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                Semua data XRT yang tampil saat ini beserta hasil audit manual (Human/System Error) akan disimpan ke database cloud.
+                            </p>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-medium">Batal</button>
+                                <button 
+                                    onClick={handleSaveReport} 
+                                    disabled={isSaving}
+                                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 shadow-sm disabled:opacity-70"
+                                >
+                                    {isSaving && <Loader2 className="w-4 h-4 animate-spin"/>}
+                                    {isSaving ? "Menyimpan..." : "Simpan Permanen"}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* DELETE MODAL */}
+             {showDeleteModal && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 border border-slate-200">
+                        <h3 className="text-lg font-bold text-rose-600 mb-4 flex items-center gap-2">
+                            <AlertOctagon className="w-5 h-5"/> Hapus Laporan
+                        </h3>
+                        <div className="space-y-4">
+                            <p className="text-sm text-slate-600">
+                                Apakah Anda yakin ingin menghapus laporan tanggal <b>{deleteTarget}</b>?
+                            </p>
+                            <p className="text-xs text-slate-500 leading-relaxed bg-rose-50 p-3 rounded-lg border border-rose-100">
+                                Data yang dihapus (termasuk hasil audit manual) tidak dapat dikembalikan.
+                            </p>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button onClick={() => setShowDeleteModal(false)} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-medium">Batal</button>
+                                <button 
+                                    onClick={executeDelete} 
+                                    disabled={isDeleting}
+                                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 shadow-sm disabled:opacity-70"
+                                >
+                                    {isDeleting && <Loader2 className="w-4 h-4 animate-spin"/>}
+                                    {isDeleting ? "Menghapus..." : "Hapus Permanen"}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* AI MODAL */}
+            {showAiModal && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full flex flex-col max-h-[90vh] overflow-hidden border border-slate-200">
+                        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                            <div className="flex items-center gap-4">
+                                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
+                                    <Bot className="w-6 h-6 text-white" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-slate-800 text-lg">AI Executive Analysis</h3>
+                                    <p className="text-xs text-slate-500 font-medium">Powered by Gemini 1.5 Flash</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setShowAiModal(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+                        </div>
+                        <div className="p-8 overflow-y-auto space-y-8 bg-white min-h-[300px]">
+                            {isAiLoading ? (
+                                <div className="flex flex-col items-center justify-center h-48 gap-4">
+                                    <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                                    <p className="text-slate-500 font-medium text-sm animate-pulse">Sedang menganalisa data & audit manual...</p>
+                                </div>
+                            ) : aiSummary ? (
+                                <>
+                                    <div className="space-y-4">
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Executive Highlights</h4>
+                                        <div className="grid gap-3">
+                                            {aiSummary.highlights?.map((h, i) => (
+                                                <div key={i} className="flex items-start gap-3 bg-slate-50 p-4 rounded-lg border border-slate-100">
+                                                    <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-600 flex-shrink-0"></div>
+                                                    <p className="text-slate-700 text-sm leading-relaxed">{h}</p>
+                                                </div>
+                                            )) || <p className="text-slate-400 italic text-sm">Data highlight tidak tersedia.</p>}
+                                        </div>
+                                    </div>
+
+                                    {/* SECTION BARU: ROOT CAUSE ANALYSIS */}
+                                    <div className="space-y-3 pt-2">
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 flex items-center gap-2">
+                                            {isFallbackMode ? <FileWarning className="w-4 h-4 text-orange-600"/> : <Search className="w-4 h-4 text-purple-600"/>} 
+                                            {isFallbackMode ? " Analisa Terbatas (Fallback Mode)" : " Analisa Akar Masalah (Root Cause)"}
+                                        </h4>
+                                        <div className={`p-5 rounded-xl border ${isFallbackMode ? 'bg-orange-50 border-orange-100 text-orange-900' : 'bg-purple-50 border-purple-100 text-purple-900'}`}>
+                                            <p className="text-sm font-medium leading-relaxed">
+                                                {aiSummary.rootCauseAnalysis || "Tidak ada analisa root cause."}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid md:grid-cols-2 gap-6">
+                                        <div className="space-y-3">
+                                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 flex items-center gap-2">Top Issues</h4>
+                                            <ul className="space-y-2">
+                                                {aiSummary.topIssues?.map((issue, i) => (
+                                                    <li key={i} className="text-rose-700 bg-rose-50 border border-rose-100 px-3 py-2 rounded text-sm font-medium flex items-start gap-2">
+                                                        <span>•</span> {issue}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                        <div className="space-y-3">
+                                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 flex items-center gap-2">SLA Risk Assessment</h4>
+                                            <p className="text-slate-600 text-sm leading-relaxed bg-blue-50 border border-blue-100 px-4 py-3 rounded" dangerouslySetInnerHTML={{ __html: aiSummary.slaImpact ? aiSummary.slaImpact.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>') : '-' }}></p>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-3 pt-2">
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 flex items-center gap-2">Strategic Recommendation</h4>
+                                        <div className="bg-emerald-50 p-5 rounded-xl border border-emerald-100">
+                                            <p className="text-emerald-900 text-sm font-medium leading-relaxed flex gap-3">
+                                                <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-600" />
+                                                {aiSummary.recommendation || '-'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="text-center text-rose-500 py-10 bg-rose-50 rounded-xl text-sm font-medium">Gagal memuat analisa AI.</div>
+                            )}
+                        </div>
+
+                        <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+                            <button onClick={() => setShowAiModal(false)} className="px-5 py-2 text-slate-600 hover:text-slate-900 font-semibold text-sm transition-colors border border-slate-200 rounded-lg hover:bg-white hover:shadow-sm">Tutup</button>
+                            <button 
+                                onClick={copyToClipboard}
+                                disabled={isAiLoading || !aiSummary}
+                                className={`px-5 py-2 bg-slate-900 text-white rounded-lg shadow-lg shadow-slate-900/10 flex items-center gap-2 font-semibold text-sm transition-all transform active:scale-95 ${isAiLoading || !aiSummary ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-800'}`}
+                            >
+                                <Copy className="w-4 h-4" />
+                                Salin Laporan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
